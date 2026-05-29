@@ -403,18 +403,18 @@ class App(FluentWindow):
                 "settings": ["picture_mode", "picture_backlight", "xiaomi_picture_backlight",
                              "picture_brightness", "picture_contrast", "picture_saturation",
                              "picture_hue", "picture_sharpness", "picture_color_temperature",
-                             "picture_local_dimming", "picture_dynamic_definition",
-                             "picture_response_time", "tv_picture_advanced_video_color_space"],
-                "jni": ["g_disp__disp_back_light"],
+                             "tv_picture_video_local_dimming", "picture_dynamic_definition",
+                             "picture_response_time", "tv_picture_video_color_space"],
+                "jni": ["g_disp__disp_back_light", "g_video__vid_gamut_mapping_mode", "g_video__clr_temp", "g_video__vid_local_dimming"],
             },
             "gamePage": {
                 "settings": ["front_sight_index", "mt_game_dynamic_ft", "mt_game_scope",
                              "mt_game_scope_night", "monitor_menu_fps_counter",
-                             "monitor_menu_stopwatch", "monitor_menu_timer", "tv_input_source_id"],
+                             "monitor_menu_stopwatch", "monitor_menu_timer", "mitv.tvplayer.hdmi.last.source"],
                 "jni_mode": True,  # 需要根据输入源选择不同的 JNI key
             },
             "sourcePage": {
-                "settings": ["tv_input_source_id"],
+                "settings": ["mitv.tvplayer.hdmi.last.source"],
             },
         }
 
@@ -578,22 +578,22 @@ class App(FluentWindow):
                 lambda val, name: self._set_mode(val, name)
             ),
             "local_dimming_cycle": (
-                "picture_local_dimming",
+                "tv_picture_video_local_dimming",
                 [(0, "关"), (1, "低"), (2, "中"), (3, "高")],
                 "精密控光",
-                lambda val, name: self._jni("g_video__vid_local_dimming", val, "picture_local_dimming", f"精密控光: {name}")
+                lambda val, name: self._jni("g_video__vid_local_dimming", val, "tv_picture_video_local_dimming", f"精密控光: {name}")
             ),
             "color_space_cycle": (
-                "tv_picture_advanced_video_color_space",
+                "tv_picture_video_color_space",
                 [(0, "自动"), (3, "sRGB"), (6, "DCI-P3"), (4, "AdobeRGB"), (5, "BT2020"), (7, "BT709")],
                 "色域",
-                lambda val, name: self._jni("g_video__vid_gamut_mapping_mode", val, "tv_picture_advanced_video_color_space", f"色域: {name}")
+                lambda val, name: self._jni("g_video__vid_gamut_mapping_mode", val, "tv_picture_video_color_space", f"色域: {name}", "tv_picture_advanced_video_color_space")
             ),
             "color_temp_cycle": (
                 "picture_color_temperature",
-                [(2, "暖色"), (1, "标准"), (0, "冷色"), (8, "原色")],
+                [(3, "暖色"), (2, "标准"), (1, "冷色"), (6, "原色"), (0, "自定义")],
                 "色温",
-                lambda val, name: self._set_color_temp(3 if val==2 else (2 if val==1 else (1 if val==0 else 6)), val, f"色温: {name}")
+                lambda val, name: self._set_color_temp(4 if val==3 else (3 if val==2 else (2 if val==1 else (6 if val==6 else 1))), val, f"色温: {name}")
             ),
             "response_time_cycle": (
                 "picture_response_time",
@@ -649,7 +649,7 @@ class App(FluentWindow):
             self.log(f"快捷键执行失败: {e}")
 
     def query_setting_or_jni(self, sk):
-        if sk == "picture_local_dimming":
+        if sk == "tv_picture_video_local_dimming":
             v = self.adb.jni_get("g_video__vid_local_dimming")
             try: return int(v)
             except: return 0
@@ -1122,40 +1122,41 @@ class App(FluentWindow):
 
         # Button Groups
         self._btn_section(layout, "色温", [
-            ("暖色", 2, lambda: self._set_color_temp(3, 2, "色温: 暖色")),
-            ("标准", 1, lambda: self._set_color_temp(2, 1, "色温: 标准")),
-            ("冷色", 0, lambda: self._set_color_temp(1, 0, "色温: 冷色")),
-            ("原色", 8, lambda: self._set_color_temp(6, 8, "色温: 原色")),
+            ("暖色", 3, lambda _: self._set_color_temp(4, 3, "色温: 暖色")),
+            ("标准", 2, lambda _: self._set_color_temp(3, 2, "色温: 标准")),
+            ("冷色", 1, lambda _: self._set_color_temp(2, 1, "色温: 冷色")),
+            ("原色", 6, lambda _: self._set_color_temp(6, 6, "色温: 原色")),
+            ("自定义", 0, lambda _: self._set_color_temp(1, 0, "色温: 自定义")),
         ], state_key="picture_color_temperature")
 
         self._btn_section(layout, "精密控光", [
-            ("关", 0, lambda: self._jni("g_video__vid_local_dimming", 0, "picture_local_dimming", "精密控光: 关")),
-            ("低", 1, lambda: self._jni("g_video__vid_local_dimming", 1, "picture_local_dimming", "精密控光: 低")),
-            ("中", 2, lambda: self._jni("g_video__vid_local_dimming", 2, "picture_local_dimming", "精密控光: 中")),
-            ("高", 3, lambda: self._jni("g_video__vid_local_dimming", 3, "picture_local_dimming", "精密控光: 高")),
-        ], state_key="picture_local_dimming")
+            ("关", 0, lambda _: self._jni("g_video__vid_local_dimming", 0, "tv_picture_video_local_dimming", "精密控光: 关")),
+            ("低", 1, lambda _: self._jni("g_video__vid_local_dimming", 1, "tv_picture_video_local_dimming", "精密控光: 低")),
+            ("中", 2, lambda _: self._jni("g_video__vid_local_dimming", 2, "tv_picture_video_local_dimming", "精密控光: 中")),
+            ("高", 3, lambda _: self._jni("g_video__vid_local_dimming", 3, "tv_picture_video_local_dimming", "精密控光: 高")),
+        ], state_key="tv_picture_video_local_dimming")
 
         self._btn_section(layout, "动态清晰度", [
-            ("关", 0, lambda: self._jni("g_video__vid_insert_black", 0, "picture_dynamic_definition", "动态清晰度: 关")),
-            ("低", 1, lambda: self._jni("g_video__vid_insert_black", 1, "picture_dynamic_definition", "动态清晰度: 低")),
-            ("中", 2, lambda: self._jni("g_video__vid_insert_black", 2, "picture_dynamic_definition", "动态清晰度: 中")),
-            ("高", 3, lambda: self._jni("g_video__vid_insert_black", 3, "picture_dynamic_definition", "动态清晰度: 高")),
+            ("关", 0, lambda _: self._jni("g_video__vid_insert_black", 0, "picture_dynamic_definition", "动态清晰度: 关")),
+            ("低", 1, lambda _: self._jni("g_video__vid_insert_black", 1, "picture_dynamic_definition", "动态清晰度: 低")),
+            ("中", 2, lambda _: self._jni("g_video__vid_insert_black", 2, "picture_dynamic_definition", "动态清晰度: 中")),
+            ("高", 3, lambda _: self._jni("g_video__vid_insert_black", 3, "picture_dynamic_definition", "动态清晰度: 高")),
         ], state_key="picture_dynamic_definition")
 
         self._btn_section(layout, "灰阶响应时间", [
-            ("普通", 1, lambda: self._jni("g_video__vid_od_response_time", 1, "picture_response_time", "响应时间: 普通")),
-            ("快速", 2, lambda: self._jni("g_video__vid_od_response_time", 2, "picture_response_time", "响应时间: 快速")),
-            ("高速", 3, lambda: self._jni("g_video__vid_od_response_time", 3, "picture_response_time", "响应时间: 高速")),
+            ("普通", 1, lambda _: self._jni("g_video__vid_od_response_time", 1, "picture_response_time", "响应时间: 普通")),
+            ("快速", 2, lambda _: self._jni("g_video__vid_od_response_time", 2, "picture_response_time", "响应时间: 快速")),
+            ("高速", 3, lambda _: self._jni("g_video__vid_od_response_time", 3, "picture_response_time", "响应时间: 高速")),
         ], state_key="picture_response_time")
 
         self._btn_section(layout, "色域", [
-            ("自动", 0, lambda: self._jni("g_video__vid_gamut_mapping_mode", 0, "tv_picture_advanced_video_color_space", "色域: 自动")),
-            ("sRGB", 3, lambda: self._jni("g_video__vid_gamut_mapping_mode", 3, "tv_picture_advanced_video_color_space", "色域: sRGB")),
-            ("DCI-P3", 6, lambda: self._jni("g_video__vid_gamut_mapping_mode", 6, "tv_picture_advanced_video_color_space", "色域: DCI-P3")),
-            ("AdobeRGB", 4, lambda: self._jni("g_video__vid_gamut_mapping_mode", 4, "tv_picture_advanced_video_color_space", "色域: Adobe RGB")),
-            ("BT2020", 5, lambda: self._jni("g_video__vid_gamut_mapping_mode", 5, "tv_picture_advanced_video_color_space", "色域: BT2020")),
-            ("BT709", 7, lambda: self._jni("g_video__vid_gamut_mapping_mode", 7, "tv_picture_advanced_video_color_space", "色域: BT709")),
-        ], state_key="tv_picture_advanced_video_color_space")
+            ("自动", 0, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 0, "tv_picture_video_color_space", "色域: 自动", "tv_picture_advanced_video_color_space")),
+            ("sRGB", 3, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 3, "tv_picture_video_color_space", "色域: sRGB", "tv_picture_advanced_video_color_space")),
+            ("DCI-P3", 6, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 6, "tv_picture_video_color_space", "色域: DCI-P3", "tv_picture_advanced_video_color_space")),
+            ("AdobeRGB", 4, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 4, "tv_picture_video_color_space", "色域: Adobe RGB", "tv_picture_advanced_video_color_space")),
+            ("BT2020", 5, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 5, "tv_picture_video_color_space", "色域: BT2020", "tv_picture_advanced_video_color_space")),
+            ("BT709", 7, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 7, "tv_picture_video_color_space", "色域: BT709", "tv_picture_advanced_video_color_space")),
+        ], state_key="tv_picture_video_color_space")
 
         scroll.setWidget(container)
         return scroll
@@ -1186,54 +1187,54 @@ class App(FluentWindow):
         layout.addLayout(title_row)
 
         # Game Switches
-        self._btn_section(layout, "准星", [("关", 0, lambda: self._fs(0))]+[(str(i), i, lambda v=i: self._fs(v)) for i in range(1,6)], state_key="front_sight_index")
+        self._btn_section(layout, "准星", [("关", 0, lambda _: self._fs(0))]+[(str(i), i, lambda _, v=i: self._fs(v)) for i in range(1,6)], state_key="front_sight_index")
         
         self._btn_section(layout, "动态准星", [
-            ("关", 0, lambda: self._set("mt_game_dynamic_ft", 0, "动态准星: 关")),
-            ("开", 1, lambda: self._set("mt_game_dynamic_ft", 1, "动态准星: 开")),
+            ("关", 0, lambda _: self._set("mt_game_dynamic_ft", 0, "动态准星: 关")),
+            ("开", 1, lambda _: self._set("mt_game_dynamic_ft", 1, "动态准星: 开")),
         ], state_key="mt_game_dynamic_ft")
 
         self._btn_section(layout, "狙击镜", [
-            ("关", 0, lambda: self._set("mt_game_scope", 0, "狙击镜: 关")),
-            ("1.1x", 1, lambda: self._set("mt_game_scope", 1, "狙击镜: 1.1x")),
-            ("1.3x", 3, lambda: self._set("mt_game_scope", 3, "狙击镜: 1.3x")),
-            ("1.5x", 5, lambda: self._set("mt_game_scope", 5, "狙击镜: 1.5x")),
-            ("1.7x", 7, lambda: self._set("mt_game_scope", 7, "狙击镜: 1.7x")),
-            ("2.0x", 10, lambda: self._set("mt_game_scope", 10, "狙击镜: 2.0x")),
+            ("关", 0, lambda _: self._set("mt_game_scope", 0, "狙击镜: 关")),
+            ("1.1x", 1, lambda _: self._set("mt_game_scope", 1, "狙击镜: 1.1x")),
+            ("1.3x", 3, lambda _: self._set("mt_game_scope", 3, "狙击镜: 1.3x")),
+            ("1.5x", 5, lambda _: self._set("mt_game_scope", 5, "狙击镜: 1.5x")),
+            ("1.7x", 7, lambda _: self._set("mt_game_scope", 7, "狙击镜: 1.7x")),
+            ("2.0x", 10, lambda _: self._set("mt_game_scope", 10, "狙击镜: 2.0x")),
         ], state_key="mt_game_scope")
 
         self._btn_section(layout, "狙击镜夜视", [
-            ("关", 0, lambda: self._set("mt_game_scope_night", 0, "狙击镜夜视: 关")),
-            ("开", 1, lambda: self._set("mt_game_scope_night", 1, "狙击镜夜视: 开")),
+            ("关", 0, lambda _: self._set("mt_game_scope_night", 0, "狙击镜夜视: 关")),
+            ("开", 1, lambda _: self._set("mt_game_scope_night", 1, "狙击镜夜视: 开")),
         ], state_key="mt_game_scope_night")
 
         self._btn_section(layout, "320Hz竞技模式", [
-            ("关", 0, lambda: self._320(False)),
-            ("开", 1, lambda: self._320(True)),
+            ("关", 0, lambda _: self._320(False)),
+            ("开", 1, lambda _: self._320(True)),
         ], state_key="mode_320")
 
         self._btn_section(layout, "FreeSync Premium Pro", [
-            ("关", 0, lambda: self._fsync(False)),
-            ("开", 1, lambda: self._fsync(True)),
+            ("关", 0, lambda _: self._fsync(False)),
+            ("开", 1, lambda _: self._fsync(True)),
         ], state_key="freesync")
 
         self._btn_section(layout, "FPS计数器", [
-            ("关", 0, lambda: self._set("monitor_menu_fps_counter", 0, "FPS: 关")),
-            ("刷新率", 1, lambda: self._set("monitor_menu_fps_counter", 1, "FPS: 刷新率")),
-            ("柱状图", 2, lambda: self._set("monitor_menu_fps_counter", 2, "FPS: 柱状图")),
+            ("关", 0, lambda _: self._set("monitor_menu_fps_counter", 0, "FPS: 关")),
+            ("刷新率", 1, lambda _: self._set("monitor_menu_fps_counter", 1, "FPS: 刷新率")),
+            ("柱状图", 2, lambda _: self._set("monitor_menu_fps_counter", 2, "FPS: 柱状图")),
         ], state_key="monitor_menu_fps_counter")
 
         self._btn_section(layout, "秒表", [
-            ("关", 0, lambda: self._set("monitor_menu_stopwatch", 0, "秒表: 关")),
-            ("开", 1, lambda: self._set("monitor_menu_stopwatch", 1, "秒表: 开")),
+            ("关", 0, lambda _: self._set("monitor_menu_stopwatch", 0, "秒表: 关")),
+            ("开", 1, lambda _: self._set("monitor_menu_stopwatch", 1, "秒表: 开")),
         ], state_key="monitor_menu_stopwatch")
 
         self._btn_section(layout, "定时器", [
-            ("关", 0, lambda: self._set("monitor_menu_timer", 0, "定时器: 关")),
-            ("1分钟", 60, lambda: self._set("monitor_menu_timer", 60, "定时器: 1分钟")),
-            ("5分钟", 300, lambda: self._set("monitor_menu_timer", 300, "定时器: 5分钟")),
-            ("30分钟", 1800, lambda: self._set("monitor_menu_timer", 1800, "定时器: 30分钟")),
-            ("60分钟", 3600, lambda: self._set("monitor_menu_timer", 3600, "定时器: 60分钟")),
+            ("关", 0, lambda _: self._set("monitor_menu_timer", 0, "定时器: 关")),
+            ("1分钟", 60, lambda _: self._set("monitor_menu_timer", 60, "定时器: 1分钟")),
+            ("5分钟", 300, lambda _: self._set("monitor_menu_timer", 300, "定时器: 5分钟")),
+            ("30分钟", 1800, lambda _: self._set("monitor_menu_timer", 1800, "定时器: 30分钟")),
+            ("60分钟", 3600, lambda _: self._set("monitor_menu_timer", 3600, "定时器: 60分钟")),
         ], state_key="monitor_menu_timer")
 
         scroll.setWidget(container)
@@ -1246,11 +1247,15 @@ class App(FluentWindow):
         layout.setSpacing(20)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-
-
+        title_row = QHBoxLayout()
         title = SubtitleLabel("信号源切换", container)
         title.setStyleSheet("font-size: 24px; font-weight: bold; margin-bottom: 5px;")
-        layout.addWidget(title)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        refresh_source_btn = PushButton("刷新数据", container)
+        refresh_source_btn.clicked.connect(lambda: self._force_refresh_page("sourcePage"))
+        title_row.addWidget(refresh_source_btn)
+        layout.addLayout(title_row)
 
         card = SimpleCardWidget(container)
         card_layout = QVBoxLayout(card)
@@ -1261,16 +1266,16 @@ class App(FluentWindow):
         btn_layout.setSpacing(12)
         btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        if "tv_input_source_id" not in self.state_buttons:
-            self.state_buttons["tv_input_source_id"] = {}
+        if "mitv.tvplayer.hdmi.last.source" not in self.state_buttons:
+            self.state_buttons["mitv.tvplayer.hdmi.last.source"] = {}
 
         for v, n in [(23, "HDMI 1"), (24, "HDMI 2"), (29, "DP"), (30, "USBC")]:
             b = ToggleButton(n, card)
             b.setCheckable(True)
             b.setFixedSize(120, 45)
-            b.clicked.connect(lambda checked=False, val=v, name=n: self._set("tv_input_source_id", val, name))
+            b.clicked.connect(lambda checked=False, val=v, name=n: self._set("mitv.tvplayer.hdmi.last.source", val, name))
             btn_layout.addWidget(b)
-            self.state_buttons["tv_input_source_id"][v] = b
+            self.state_buttons["mitv.tvplayer.hdmi.last.source"][v] = b
 
         card_layout.addLayout(btn_layout)
         layout.addWidget(card)
@@ -1947,18 +1952,28 @@ class App(FluentWindow):
 
     def _set(self, k, v, m):
         if not self.check_connection(): return
-        self.adb.put(k, str(v))
+        # 信号源切换使用 intent 方式
+        if k == "mitv.tvplayer.hdmi.last.source":
+            self.adb.shell(f"am force-stop com.xiaomi.mitv.tvplayer")
+            self.adb.shell(f"am start -a com.xiaomi.mitv.tvplayer.EXTSRC_PLAY -n com.xiaomi.mitv.tvplayer/.ExternalSourceActivity --ei input {v} -f 0x10000000")
+        else:
+            self.adb.put(k, str(v))
         self.adb.refresh_pq()
         self.log(m)
         self.current_vals[k] = v
         self._optimistic_highlight(k, v)
-        if k == "tv_input_source_id":
+        if k == "mitv.tvplayer.hdmi.last.source":
             self.source_var_text = self._source_names.get(v, f"未知 ({v})")
             self.source_label.setText(self.source_var_text)
 
-    def _jni(self, jk, v, sk, m):
+    def _jni(self, jk, v, sk, m, osd_sk=None):
         if not self.check_connection(): return
-        self.adb.jni_set(jk, v); self.adb.put(sk, str(v)); self.adb.refresh_pq(); self.log(m)
+        self.adb.jni_set(jk, v)
+        self.adb.put(sk, str(v))
+        if osd_sk:
+            self.adb.put(osd_sk, str(v))
+        self.adb.refresh_pq()
+        self.log(m)
         self.current_vals[sk] = v
         self._optimistic_highlight(sk, v)
 
@@ -1982,9 +1997,13 @@ class App(FluentWindow):
         self.current_vals["front_sight_index"] = v
         self._optimistic_highlight("front_sight_index", v)
 
+    def _get_input_source(self):
+        """获取当前输入源"""
+        return self.adb.get("mitv.tvplayer.hdmi.last.source")
+
     def _320(self, on):
         if not self.check_connection(): return
-        src = self.adb.get("tv_input_source_id")
+        src = self._get_input_source()
         if src in ("29","30"): self.adb.jni_set("g_fusion_picture__dp_edid_version", 3 if on else 2)
         else: self.adb.jni_set("g_fusion_picture__hdmi_edid_version", 6 if on else 1)
         self.adb.refresh_pq()
@@ -1994,7 +2013,7 @@ class App(FluentWindow):
 
     def _fsync(self, on):
         if not self.check_connection(): return
-        src = self.adb.get("tv_input_source_id")
+        src = self._get_input_source()
         if src in ("29","30"): self.adb.jni_set("g_video__dp_adaptive_sync", 1 if on else 0)
         else: self.adb.jni_set("g_video__freesync_switch", 3 if on else 0)
         self.adb.refresh_pq()
@@ -2128,7 +2147,7 @@ class App(FluentWindow):
 
     def _apply_polled_values(self, vals):
         # 设备存的是 MTK 值，需要转成 settings 值才能匹配按钮
-        _MTK_TO_SETTINGS_COLOR_TEMP = {1: 0, 2: 1, 3: 2, 6: 8}
+        _MTK_TO_SETTINGS_COLOR_TEMP = {1: 0, 2: 1, 3: 2, 4: 3, 6: 6}
         if "picture_color_temperature" in vals:
             mtk_val = vals["picture_color_temperature"]
             if mtk_val in _MTK_TO_SETTINGS_COLOR_TEMP:
@@ -2162,8 +2181,8 @@ class App(FluentWindow):
         if "picture_mode" in vals:
             self._highlight_mode(vals["picture_mode"])
 
-        if "tv_input_source_id" in vals:
-            sid = vals["tv_input_source_id"]
+        if "mitv.tvplayer.hdmi.last.source" in vals:
+            sid = vals["mitv.tvplayer.hdmi.last.source"]
             self.source_var_text = self._source_names.get(sid, f"未知 ({sid})")
             self.source_label.setText(self.source_var_text)
 
@@ -2240,9 +2259,35 @@ class App(FluentWindow):
                     try: jni_vals["g_disp__disp_back_light"] = int(bl)
                     except: pass
 
+                # 读取 JNI 色域 (覆盖 settings 中的 tv_picture_video_color_space)
+                if "g_video__vid_gamut_mapping_mode" in cfg.get("jni", []):
+                    gamut = self.adb.jni_get("g_video__vid_gamut_mapping_mode")
+                    try:
+                        gamut_val = int(gamut)
+                        # MTK 值和 settings 值一致，直接覆盖
+                        settings_vals["tv_picture_video_color_space"] = gamut_val
+                    except: pass
+
+                # 读取 JNI 色温 (MTK 值需转换为 settings 值)
+                if "g_video__clr_temp" in cfg.get("jni", []):
+                    _MTK_TO_SETTINGS_COLOR_TEMP = {1: 0, 2: 1, 3: 2, 4: 3, 6: 6}
+                    clr = self.adb.jni_get("g_video__clr_temp")
+                    try:
+                        clr_val = int(clr)
+                        if clr_val in _MTK_TO_SETTINGS_COLOR_TEMP:
+                            settings_vals["picture_color_temperature"] = _MTK_TO_SETTINGS_COLOR_TEMP[clr_val]
+                    except: pass
+
+                # 读取 JNI 控光 (直接覆盖 settings)
+                if "g_video__vid_local_dimming" in cfg.get("jni", []):
+                    dim = self.adb.jni_get("g_video__vid_local_dimming")
+                    try:
+                        settings_vals["tv_picture_video_local_dimming"] = int(dim)
+                    except: pass
+
                 # 读取 JNI 模式 (game page)
                 if cfg.get("jni_mode"):
-                    src = settings_vals.get("tv_input_source_id")
+                    src = settings_vals.get("mitv.tvplayer.hdmi.last.source")
                     if src in (29, 30):
                         edid = self.adb.jni_get("g_fusion_picture__dp_edid_version")
                         try: jni_vals["mode_320"] = 1 if int(edid) == 3 else 0
