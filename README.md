@@ -35,6 +35,12 @@ PC (MonitorToolbox.exe)
       (320Hz g_fusion_picture__hdmi_edid_version)
       (FreeSync g_video__freesync_switch)
       (恢复默认 g_fusion_picture__pic_reset_def_bypicmode)
+
+  └─ ColorfulLedTool.jar ──► MiTV PM2 炫彩灯 HIDL 接口
+      (炫彩灯模式)
+      (照明色温)
+      (纯色颜色)
+      (亮度)
 ```
 
 ### JNI 调用方式
@@ -62,13 +68,13 @@ service call TvService 3 s16 "sh -c eval\${IFS}CLASSPATH=...\${IFS}MtkDirectTool
 
 ### Jar 自动部署
 
-首次连接时自动检测并补齐 `MtkDirectTool.jar`：
+首次连接时自动检测并补齐 `MtkDirectTool.jar` / `ColorfulLedTool.jar`：
 
 1. 检查设备 `/sdcard/` 是否已有 jar
 2. 没有则从本地 push 到 `/sdcard/`
 3. 从 `/sdcard/` 复制到 `/data/data/mitv.service/cache/`
 
-打包后 jar 嵌入 exe 中（PyInstaller `--add-binary`）。
+打包后 jar 会从 `assets/runtime/` 嵌入 exe 中（PyInstaller `--add-binary`）。
 
 ## 功能
 
@@ -76,11 +82,34 @@ service call TvService 3 s16 "sh -c eval\${IFS}CLASSPATH=...\${IFS}MtkDirectTool
 - 画面设置：模式 / 背光 / 黑色级别 / 对比度 / 饱和度 / 色调 / 锐度 / 色温 / 精密控光 / 动态清晰度 / 响应时间 / 色域
 - 游戏模式：准星 / 动态准星 / 狙击镜 / 夜视 / 320Hz / FreeSync / FPS 计数器 / 秒表 / 定时器
 - 信号源切换（HDMI 1/2 / DP / USBC）
+- 屏幕灯：炫彩灯模式 / 亮度挡位 / 纯色颜色 / 照明色温
 - 虚拟遥控器
 - 全局快捷键（Windows）+ OSD 悬浮通知
 - 开机自启动最小化
 - 4K UI 模式（3840×2160 / DPI 640，需重启显示器）
+- ADB 保活守护部署与状态检测（内置 `assets/adb_guardian/adbguardian-signed.apk`）
 - 操作日志记录与导出
+
+## 项目资源结构
+
+```text
+assets/
+  app/
+    icon.ico
+  runtime/
+    adb.exe
+    AdbWinApi.dll
+    AdbWinUsbApi.dll
+    MtkDirectTool.jar
+    ColorfulLedTool.jar
+  adb_guardian/
+    adbguardian-signed.apk
+tools/
+  colorful_led/
+    ColorfulLedTool.java
+```
+
+`assets/runtime/` 是主程序运行所需的本地工具，`assets/adb_guardian/` 是可部署到显示器端的 ADB 保活应用，`tools/colorful_led/` 保留屏幕灯 helper 源码。
 
 ## 打包
 
@@ -89,12 +118,14 @@ service call TvService 3 s16 "sh -c eval\${IFS}CLASSPATH=...\${IFS}MtkDirectTool
 pip install pyinstaller pyqt6 qfluentwidgets
 
 # 打包（或直接运行 build.bat）
-pyinstaller --onefile --windowed --name "MonitorToolbox" --icon=icon.ico \
+pyinstaller --onefile --windowed --name "MonitorToolbox" --icon=assets/app/icon.ico \
   --hidden-import qfluentwidgets \
-  --add-binary "adb.exe;." \
-  --add-binary "AdbWinApi.dll;." \
-  --add-binary "AdbWinUsbApi.dll;." \
-  --add-binary "MtkDirectTool.jar;." \
+  --add-binary "assets/runtime/adb.exe;assets/runtime" \
+  --add-binary "assets/runtime/AdbWinApi.dll;assets/runtime" \
+  --add-binary "assets/runtime/AdbWinUsbApi.dll;assets/runtime" \
+  --add-binary "assets/runtime/MtkDirectTool.jar;assets/runtime" \
+  --add-binary "assets/runtime/ColorfulLedTool.jar;assets/runtime" \
+  --add-binary "assets/adb_guardian/adbguardian-signed.apk;assets/adb_guardian" \
   monitor_controller.py
 ```
 
