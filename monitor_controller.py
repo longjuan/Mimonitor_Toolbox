@@ -637,8 +637,9 @@ class App(FluentWindow):
                              "picture_brightness", "picture_contrast", "picture_saturation",
                              "picture_hue", "picture_sharpness", "picture_color_temperature",
                              "picture_red_gain", "picture_green_gain", "picture_blue_gain",
-                             "tv_picture_video_local_dimming", "picture_dynamic_definition",
-                             "picture_response_time", "tv_picture_video_color_space"],
+                             "picture_local_dimming", "tv_picture_video_local_dimming",
+                             "picture_dynamic_definition", "picture_response_time",
+                             "tv_picture_advanced_video_color_space", "tv_picture_video_color_space"],
                 "jni": ["g_disp__disp_back_light", "g_video__vid_gamut_mapping_mode", "g_video__clr_temp", "g_video__vid_local_dimming"],
             },
             "gamePage": {
@@ -847,16 +848,16 @@ class App(FluentWindow):
                 lambda val, name: self._set_mode(val, name)
             ),
             "local_dimming_cycle": (
-                "tv_picture_video_local_dimming",
+                "picture_local_dimming",
                 [(0, "关"), (1, "低"), (2, "中"), (3, "高")],
                 "精密控光",
-                lambda val, name: self._jni("g_video__vid_local_dimming", val, "tv_picture_video_local_dimming", f"精密控光: {name}")
+                lambda val, name: self._jni("g_video__vid_local_dimming", val, "picture_local_dimming", f"精密控光: {name}", "tv_picture_video_local_dimming")
             ),
             "color_space_cycle": (
-                "tv_picture_video_color_space",
+                "tv_picture_advanced_video_color_space",
                 [(0, "自动"), (3, "sRGB"), (6, "DCI-P3"), (4, "AdobeRGB"), (5, "BT2020"), (7, "BT709")],
                 "色域",
-                lambda val, name: self._jni("g_video__vid_gamut_mapping_mode", val, "tv_picture_video_color_space", f"色域: {name}", "tv_picture_advanced_video_color_space")
+                lambda val, name: self._jni("g_video__vid_gamut_mapping_mode", val, "tv_picture_advanced_video_color_space", f"色域: {name}", "tv_picture_video_color_space")
             ),
             "color_temp_cycle": (
                 "picture_color_temperature",
@@ -1052,8 +1053,12 @@ class App(FluentWindow):
                 self.current_vals[key] = 1024
 
     def query_setting_or_jni(self, sk):
-        if sk == "tv_picture_video_local_dimming":
+        if sk in ("picture_local_dimming", "tv_picture_video_local_dimming"):
             v = self.adb.jni_get("g_video__vid_local_dimming")
+            try: return int(v)
+            except: return 0
+        elif sk in ("tv_picture_advanced_video_color_space", "tv_picture_video_color_space"):
+            v = self.adb.jni_get("g_video__vid_gamut_mapping_mode")
             try: return int(v)
             except: return 0
         elif sk == "picture_response_time":
@@ -1607,11 +1612,11 @@ class App(FluentWindow):
         self._add_color_gain_slider(layout, "蓝色增益", "blue_gain", "picture_blue_gain", "g_video__clr_gain_b")
 
         self._btn_section(layout, "精密控光", [
-            ("关", 0, lambda _: self._jni("g_video__vid_local_dimming", 0, "tv_picture_video_local_dimming", "精密控光: 关")),
-            ("低", 1, lambda _: self._jni("g_video__vid_local_dimming", 1, "tv_picture_video_local_dimming", "精密控光: 低")),
-            ("中", 2, lambda _: self._jni("g_video__vid_local_dimming", 2, "tv_picture_video_local_dimming", "精密控光: 中")),
-            ("高", 3, lambda _: self._jni("g_video__vid_local_dimming", 3, "tv_picture_video_local_dimming", "精密控光: 高")),
-        ], state_key="tv_picture_video_local_dimming")
+            ("关", 0, lambda _: self._jni("g_video__vid_local_dimming", 0, "picture_local_dimming", "精密控光: 关", "tv_picture_video_local_dimming")),
+            ("低", 1, lambda _: self._jni("g_video__vid_local_dimming", 1, "picture_local_dimming", "精密控光: 低", "tv_picture_video_local_dimming")),
+            ("中", 2, lambda _: self._jni("g_video__vid_local_dimming", 2, "picture_local_dimming", "精密控光: 中", "tv_picture_video_local_dimming")),
+            ("高", 3, lambda _: self._jni("g_video__vid_local_dimming", 3, "picture_local_dimming", "精密控光: 高", "tv_picture_video_local_dimming")),
+        ], state_key="picture_local_dimming")
 
         self._btn_section(layout, "动态清晰度", [
             ("关", 0, lambda _: self._jni("g_video__vid_insert_black", 0, "picture_dynamic_definition", "动态清晰度: 关")),
@@ -1627,13 +1632,13 @@ class App(FluentWindow):
         ], state_key="picture_response_time")
 
         self._btn_section(layout, "色域", [
-            ("自动", 0, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 0, "tv_picture_video_color_space", "色域: 自动", "tv_picture_advanced_video_color_space")),
-            ("sRGB", 3, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 3, "tv_picture_video_color_space", "色域: sRGB", "tv_picture_advanced_video_color_space")),
-            ("DCI-P3", 6, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 6, "tv_picture_video_color_space", "色域: DCI-P3", "tv_picture_advanced_video_color_space")),
-            ("AdobeRGB", 4, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 4, "tv_picture_video_color_space", "色域: Adobe RGB", "tv_picture_advanced_video_color_space")),
-            ("BT2020", 5, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 5, "tv_picture_video_color_space", "色域: BT2020", "tv_picture_advanced_video_color_space")),
-            ("BT709", 7, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 7, "tv_picture_video_color_space", "色域: BT709", "tv_picture_advanced_video_color_space")),
-        ], state_key="tv_picture_video_color_space")
+            ("自动", 0, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 0, "tv_picture_advanced_video_color_space", "色域: 自动", "tv_picture_video_color_space")),
+            ("sRGB", 3, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 3, "tv_picture_advanced_video_color_space", "色域: sRGB", "tv_picture_video_color_space")),
+            ("DCI-P3", 6, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 6, "tv_picture_advanced_video_color_space", "色域: DCI-P3", "tv_picture_video_color_space")),
+            ("AdobeRGB", 4, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 4, "tv_picture_advanced_video_color_space", "色域: Adobe RGB", "tv_picture_video_color_space")),
+            ("BT2020", 5, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 5, "tv_picture_advanced_video_color_space", "色域: BT2020", "tv_picture_video_color_space")),
+            ("BT709", 7, lambda _: self._jni("g_video__vid_gamut_mapping_mode", 7, "tv_picture_advanced_video_color_space", "色域: BT709", "tv_picture_video_color_space")),
+        ], state_key="tv_picture_advanced_video_color_space")
 
         scroll.setWidget(container)
         return scroll
@@ -2742,6 +2747,8 @@ class App(FluentWindow):
         self.adb.refresh_pq()
         self.log(m)
         self.current_vals[sk] = v
+        if osd_sk:
+            self.current_vals[osd_sk] = v
         self._optimistic_highlight(sk, v)
 
     def _set_color_temp(self, jv, sv, m):
@@ -3331,12 +3338,13 @@ class App(FluentWindow):
                     try: jni_vals["g_disp__disp_back_light"] = int(bl)
                     except: pass
 
-                # 读取 JNI 色域 (覆盖 settings 中的 tv_picture_video_color_space)
+                # 读取 JNI 色域 (覆盖 settings 中的主键和旧 OSD 键)
                 if "g_video__vid_gamut_mapping_mode" in cfg.get("jni", []):
                     gamut = self.adb.jni_get("g_video__vid_gamut_mapping_mode")
                     try:
                         gamut_val = int(gamut)
                         # MTK 值和 settings 值一致，直接覆盖
+                        settings_vals["tv_picture_advanced_video_color_space"] = gamut_val
                         settings_vals["tv_picture_video_color_space"] = gamut_val
                     except: pass
 
@@ -3349,11 +3357,13 @@ class App(FluentWindow):
                             settings_vals["picture_color_temperature"] = MTK_TO_XIAOMI_COLOR_TEMP[clr_val]
                     except: pass
 
-                # 读取 JNI 控光 (直接覆盖 settings)
+                # 读取 JNI 控光 (覆盖官方主键和旧 OSD 键)
                 if "g_video__vid_local_dimming" in cfg.get("jni", []):
                     dim = self.adb.jni_get("g_video__vid_local_dimming")
                     try:
-                        settings_vals["tv_picture_video_local_dimming"] = int(dim)
+                        dim_val = int(dim)
+                        settings_vals["picture_local_dimming"] = dim_val
+                        settings_vals["tv_picture_video_local_dimming"] = dim_val
                     except: pass
 
                 # 读取 JNI 模式 (game page)
