@@ -11,6 +11,8 @@ import ctypes
 # Native Windows Hotkey support variables
 user32 = None
 WM_HOTKEY = 0x0312
+WM_DISPLAYCHANGE = 0x007E
+WM_SETTINGCHANGE = 0x001A
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
@@ -40,25 +42,48 @@ NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 import json
 
-def get_settings_path():
-    """获取跨平台、无需管理员权限的软件配置保存路径"""
+def get_app_data_dir():
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA", os.environ.get("USERPROFILE", os.path.expanduser("~")))
     else:
         base = os.path.expanduser("~")
     folder = os.path.join(base, ".gpro_controller")
     os.makedirs(folder, exist_ok=True)
+    return folder
+
+def get_settings_path():
+    """获取跨平台、无需管理员权限的软件配置保存路径"""
+    folder = get_app_data_dir()
     return os.path.join(folder, "config.json")
 
 def load_settings():
+    defaults = {
+        "close_behavior": "tray",
+        "never_ask_close": False,
+        "saved_ip": "",
+        "hdr_sdr_local_dimming_enabled": False,
+        "local_dimming_memory": {"sdr": None, "hdr": None},
+    }
     path = get_settings_path()
+    data = {}
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
         except Exception:
             pass
-    return {"close_behavior": "tray", "never_ask_close": False, "saved_ip": ""}
+    if not isinstance(data, dict):
+        data = {}
+    merged = defaults.copy()
+    merged.update(data)
+    memory = merged.get("local_dimming_memory")
+    if not isinstance(memory, dict):
+        memory = {}
+    merged["local_dimming_memory"] = {
+        "sdr": memory.get("sdr"),
+        "hdr": memory.get("hdr"),
+    }
+    return merged
 
 def save_settings(s):
     path = get_settings_path()
@@ -80,6 +105,143 @@ def get_local_subnet():
         return "192.168.1"
 
 
+def query_windows_hdr_enabled(window_handle=None):
+    """Return True/False for the active Windows HDR color space, or None when unavailable."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes.wintypes as wt
+        import uuid
+
+        DXGI_ERROR_NOT_FOUND = 0x887A0002
+        DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 = 12
+        MONITOR_DEFAULTTONEAREST = 2
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("Data1", wt.DWORD), ("Data2", wt.WORD), ("Data3", wt.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+        def make_guid(value):
+            return GUID.from_buffer_copy(uuid.UUID(value).bytes_le)
+
+        class POINTL(ctypes.Structure):
+            _fields_ = [("x", wt.LONG), ("y", wt.LONG)]
+
+        class RECTL(ctypes.Structure):
+            _fields_ = [("left", wt.LONG), ("top", wt.LONG), ("right", wt.LONG), ("bottom", wt.LONG)]
+
+        class DXGI_OUTPUT_DESC1(ctypes.Structure):
+            _fields_ = [
+                ("DeviceName", wt.WCHAR * 32),
+                ("DesktopCoordinates", RECTL),
+                ("AttachedToDesktop", wt.BOOL),
+                ("Rotation", ctypes.c_int),
+                ("Monitor", wt.HMONITOR),
+                ("BitsPerColor", wt.UINT),
+                ("ColorSpace", ctypes.c_int),
+                ("RedPrimary", ctypes.c_float * 2),
+                ("GreenPrimary", ctypes.c_float * 2),
+                ("BluePrimary", ctypes.c_float * 2),
+                ("WhitePoint", ctypes.c_float * 2),
+                ("MinLuminance", ctypes.c_float),
+                ("MaxLuminance", ctypes.c_float),
+                ("MaxFullFrameLuminance", ctypes.c_float),
+            ]
+
+        def as_uint(hr):
+            return hr & 0xFFFFFFFF
+
+        def release(ptr):
+            if not ptr:
+                return
+            vtbl = ctypes.cast(ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+            release_fn = ctypes.WINFUNCTYPE(wt.ULONG, ctypes.c_void_p)(vtbl[2])
+            release_fn(ptr)
+
+        def method(ptr, index, restype, *argtypes):
+            vtbl = ctypes.cast(ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+            return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(vtbl[index])
+
+        target_monitor = None
+        if window_handle and user32:
+            target_monitor = user32.MonitorFromWindow(wt.HWND(int(window_handle)), MONITOR_DEFAULTTONEAREST)
+            try:
+                target_monitor = int(target_monitor or 0)
+            except Exception:
+                target_monitor = None
+
+        dxgi = ctypes.WinDLL("dxgi")
+        create_factory = dxgi.CreateDXGIFactory1
+        create_factory.argtypes = [ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)]
+        create_factory.restype = ctypes.c_long
+
+        iid_factory1 = make_guid("770aae78-f26f-4dba-a829-253c83d1b387")
+        iid_output6 = make_guid("068346e8-aaec-4b84-add7-137f513f77a1")
+        factory_ptr = ctypes.c_void_p()
+        if create_factory(ctypes.byref(iid_factory1), ctypes.byref(factory_ptr)) != 0 or not factory_ptr.value:
+            return None
+
+        attached_states = []
+        matched_state = None
+        factory = factory_ptr.value
+        try:
+            enum_adapters1 = method(factory, 12, ctypes.c_long, wt.UINT, ctypes.POINTER(ctypes.c_void_p))
+            adapter_index = 0
+            while True:
+                adapter_ptr = ctypes.c_void_p()
+                hr = enum_adapters1(factory, adapter_index, ctypes.byref(adapter_ptr))
+                if as_uint(hr) == DXGI_ERROR_NOT_FOUND:
+                    break
+                if hr != 0 or not adapter_ptr.value:
+                    break
+                adapter = adapter_ptr.value
+                try:
+                    enum_outputs = method(adapter, 7, ctypes.c_long, wt.UINT, ctypes.POINTER(ctypes.c_void_p))
+                    output_index = 0
+                    while True:
+                        output_ptr = ctypes.c_void_p()
+                        hr = enum_outputs(adapter, output_index, ctypes.byref(output_ptr))
+                        if as_uint(hr) == DXGI_ERROR_NOT_FOUND:
+                            break
+                        if hr != 0 or not output_ptr.value:
+                            break
+                        output = output_ptr.value
+                        try:
+                            query_interface = method(output, 0, ctypes.c_long, ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p))
+                            output6_ptr = ctypes.c_void_p()
+                            if query_interface(output, ctypes.byref(iid_output6), ctypes.byref(output6_ptr)) == 0 and output6_ptr.value:
+                                output6 = output6_ptr.value
+                                try:
+                                    desc = DXGI_OUTPUT_DESC1()
+                                    get_desc1 = method(output6, 27, ctypes.c_long, ctypes.POINTER(DXGI_OUTPUT_DESC1))
+                                    if get_desc1(output6, ctypes.byref(desc)) == 0 and desc.AttachedToDesktop:
+                                        is_hdr = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+                                        attached_states.append(is_hdr)
+                                        try:
+                                            monitor = int(desc.Monitor or 0)
+                                        except Exception:
+                                            monitor = None
+                                        if target_monitor and monitor == target_monitor:
+                                            matched_state = is_hdr
+                                finally:
+                                    release(output6)
+                        finally:
+                            release(output)
+                        output_index += 1
+                finally:
+                    release(adapter)
+                adapter_index += 1
+        finally:
+            release(factory)
+
+        if matched_state is not None:
+            return matched_state
+        if attached_states:
+            return any(attached_states)
+        return None
+    except Exception:
+        return None
+
+
 def get_app_base_dir():
     return os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
 
@@ -93,15 +255,49 @@ def bundled_resource_path(*parts):
         return p
     return None
 
+def ensure_persistent_adb_runtime(adb_path):
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return adb_path
+    try:
+        import shutil
+        runtime_dir = os.path.join(get_app_data_dir(), "runtime")
+        os.makedirs(runtime_dir, exist_ok=True)
+        for filename in ("adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll"):
+            src = bundled_resource_path("assets", "runtime", filename)
+            if not src or not os.path.exists(src):
+                continue
+            dst = os.path.join(runtime_dir, filename)
+            try:
+                same_file = os.path.abspath(src).lower() == os.path.abspath(dst).lower()
+            except Exception:
+                same_file = False
+            if same_file:
+                continue
+            should_copy = not os.path.exists(dst)
+            if not should_copy:
+                try:
+                    should_copy = os.path.getsize(src) != os.path.getsize(dst) or int(os.path.getmtime(src)) > int(os.path.getmtime(dst))
+                except Exception:
+                    should_copy = True
+            if should_copy:
+                shutil.copy2(src, dst)
+        persistent_adb = os.path.join(runtime_dir, "adb.exe")
+        if os.path.exists(persistent_adb):
+            return persistent_adb
+    except Exception:
+        pass
+    return adb_path
+
 def get_adb_path():
     adb_names = ["adb.exe"] if sys.platform == "win32" else ["adb"]
     for n in adb_names:
         p = bundled_resource_path("assets", "runtime", n)
         if p:
-            return p
+            return ensure_persistent_adb_runtime(p)
     return "adb"
 
 ADB = get_adb_path()
+ADB_SERVER_PORT = os.environ.get("MIMONITOR_ADB_SERVER_PORT", "5038")
 GUARDIAN_PACKAGE = "com.example.adbguardian"
 GUARDIAN_MAIN_ACTIVITY = f"{GUARDIAN_PACKAGE}/.MainActivity"
 GUARDIAN_ACCESSIBILITY = f"{GUARDIAN_PACKAGE}/{GUARDIAN_PACKAGE}.AdbGuardianAccessibilityService"
@@ -114,6 +310,7 @@ CUSTOM_COLOR_TEMP_VALUE = 3
 HOTKEY_MODIFIERS = ["无", "Ctrl + Alt", "Ctrl + Shift", "Alt + Shift", "Win + Shift"]
 HOTKEY_KEYS = ["无"] + [f"F{i}" for i in range(1, 13)] + [str(i) for i in range(0, 10)] + list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ["+", "-", "PageUp", "PageDown", "↑", "↓", "←", "→"]
 HOTKEY_EXTRA_VK = {"+": 0xBB, "-": 0xBD, "PageUp": 0x21, "PageDown": 0x22, "↑": 0x26, "↓": 0x28, "←": 0x25, "→": 0x27}
+LOCAL_DIMMING_NAMES = {0: "关", 1: "低", 2: "中", 3: "高"}
 ADJUSTABLE_HOTKEY_PARAMS = {
     "backlight": {
         "label": "背光", "setting": "picture_backlight", "settings": ["picture_backlight", "xiaomi_picture_backlight"],
@@ -177,6 +374,18 @@ _log_path = None
 _log_to_file_enabled = False
 _adb_processes = set()
 
+def adb_command(args):
+    cmd = [ADB]
+    if ADB_SERVER_PORT:
+        cmd += ["-P", str(ADB_SERVER_PORT)]
+    return cmd + args
+
+def adb_command_text(args):
+    parts = [f'"{ADB}"']
+    if ADB_SERVER_PORT:
+        parts += ["-P", str(ADB_SERVER_PORT)]
+    return " ".join(parts + args)
+
 def _adb_log(msg):
     """写入ADB操作日志到文件"""
     if _log_file and _log_to_file_enabled:
@@ -188,14 +397,15 @@ def _adb_log(msg):
 def adb_run(args, timeout=10):
     proc = None
     try:
-        proc = subprocess.Popen([ADB]+args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        cmd = adb_command(args)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
         _adb_processes.add(proc)
         stdout, stderr = proc.communicate(timeout=timeout)
         out = stdout.strip()
         if not out and stderr:
             out = stderr.strip()
-        _adb_log(f"adb {' '.join(args)} => {out[:200]}")
+        _adb_log(f"{adb_command_text(args)} => {out[:200]}")
         return out
     except subprocess.TimeoutExpired:
         if proc:
@@ -204,10 +414,10 @@ def adb_run(args, timeout=10):
                 proc.communicate(timeout=1)
             except Exception:
                 pass
-        _adb_log(f"adb {' '.join(args)} => TIMEOUT")
+        _adb_log(f"{adb_command_text(args)} => TIMEOUT")
         return ""
     except Exception as e:
-        _adb_log(f"adb {' '.join(args)} => ERROR: {e}")
+        _adb_log(f"{adb_command_text(args)} => ERROR: {e}")
         return ""
     finally:
         if proc:
@@ -223,7 +433,7 @@ def cleanup_adb_processes(kill_server=False):
         _adb_processes.discard(proc)
     if kill_server:
         try:
-            subprocess.run([ADB, "kill-server"], capture_output=True, text=True, timeout=3,
+            subprocess.run(adb_command(["kill-server"]), capture_output=True, text=True, timeout=3,
                            creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
         except Exception:
             pass
@@ -687,6 +897,13 @@ class App(FluentWindow):
         self._picture_mode_switch_seq = 0
         self._adjust_hotkey_pending = {}
         self._adjust_hotkey_timers = {}
+        self._adb_busy_until = 0.0
+        self._hdr_last_state = None
+        self._hdr_state_source = None
+        self._hdr_windows_state = None
+        self._hdr_memory_apply_timer = QTimer(self)
+        self._hdr_memory_apply_timer.setSingleShot(True)
+        self._hdr_memory_apply_timer.timeout.connect(self._apply_hdr_memory_for_current_state)
         self.register_global_hotkeys()
 
         # 页面切换时按需加载数据
@@ -695,6 +912,11 @@ class App(FluentWindow):
         self.adb_keepalive_timer.setInterval(15000)
         self.adb_keepalive_timer.timeout.connect(self._keep_adb_alive)
         self.adb_keepalive_timer.start()
+        self.hdr_memory_timer = QTimer(self)
+        self.hdr_memory_timer.setInterval(3000)
+        self.hdr_memory_timer.timeout.connect(lambda: self._poll_hdr_memory_state("timer"))
+        self.hdr_memory_timer.start()
+        QTimer.singleShot(0, self._update_hdr_memory_status_label)
         QApplication.instance().aboutToQuit.connect(self.cleanup_before_exit)
 
     def setup_tray(self):
@@ -831,6 +1053,8 @@ class App(FluentWindow):
                         action = payload.get("action") if isinstance(payload, dict) else payload
                         self.trigger_hotkey_action(action)
                 return True, 0
+            if msg.message in (WM_DISPLAYCHANGE, WM_SETTINGCHANGE):
+                self._schedule_hdr_memory_check("windows_event", delay_ms=600)
         return super().nativeEvent(eventType, message)
 
     def trigger_hotkey_action(self, action):
@@ -1032,6 +1256,7 @@ class App(FluentWindow):
         for k in settings_keys:
             self.current_vals[k] = value
         self.values_signal.emit({setting: value})
+        self._mark_adb_busy(2.5)
 
         def do():
             if cfg.get("jni"):
@@ -1083,6 +1308,242 @@ class App(FluentWindow):
             try: return int(v)
             except: return v
 
+    def _hdr_memory_enabled(self):
+        return bool(load_settings().get("hdr_sdr_local_dimming_enabled", False))
+
+    def _toggle_hdr_local_dimming_memory(self, state):
+        try:
+            state_val = int(state)
+        except Exception:
+            state_val = getattr(state, "value", 0)
+        enabled = state_val == Qt.CheckState.Checked.value
+        s = load_settings()
+        s["hdr_sdr_local_dimming_enabled"] = enabled
+        save_settings(s)
+        if enabled:
+            self._ensure_local_dimming_memory_defaults()
+            self._hdr_last_state = None
+            self._hdr_state_source = None
+            self._hdr_windows_state = None
+            self.log("HDR/SDR 分区控光记忆: 开启")
+            self._update_hdr_memory_status_label("正在检测 Windows HDR")
+            self._schedule_hdr_memory_check("enabled", delay_ms=80)
+        else:
+            self.log("HDR/SDR 分区控光记忆: 关闭")
+            self._update_hdr_memory_status_label()
+
+    def _mark_adb_busy(self, seconds=2.0):
+        self._adb_busy_until = max(getattr(self, "_adb_busy_until", 0.0), time.monotonic() + seconds)
+
+    def _adb_channel_busy(self):
+        if time.monotonic() < getattr(self, "_adb_busy_until", 0.0):
+            return True
+        if getattr(self, "_page_loading", None):
+            return True
+        for timer in getattr(self, "_adjust_hotkey_timers", {}).values():
+            if timer.isActive():
+                return True
+        return False
+
+    def _schedule_hdr_memory_check(self, reason="manual", delay_ms=500):
+        QTimer.singleShot(delay_ms, lambda r=reason: self._poll_hdr_memory_state(r))
+
+    def _query_windows_hdr_state(self):
+        try:
+            return query_windows_hdr_enabled(int(self.winId()))
+        except Exception:
+            return query_windows_hdr_enabled()
+
+    def _poll_hdr_memory_state(self, reason="timer"):
+        visible_interval = 3000
+        background_interval = 8000
+        target_interval = visible_interval if self.isVisible() and not self.isMinimized() else background_interval
+        if hasattr(self, "hdr_memory_timer") and self.hdr_memory_timer.interval() != target_interval:
+            self.hdr_memory_timer.setInterval(target_interval)
+
+        if not self._hdr_memory_enabled():
+            self._update_hdr_memory_status_label()
+            return
+
+        win_state = self._query_windows_hdr_state()
+        if win_state is None:
+            self._hdr_windows_state = None
+            self._hdr_last_state = None
+            self._hdr_state_source = None
+            self._update_hdr_memory_status_label("Windows HDR 状态未知")
+            return
+        self._on_hdr_memory_state_detected(win_state, "Windows HDR")
+
+    def _on_hdr_memory_state_detected(self, state, source):
+        if state is None:
+            self._update_hdr_memory_status_label("信号状态未知")
+            return
+        self._hdr_windows_state = state
+        self._reconcile_hdr_memory_state(source)
+
+    def _reconcile_hdr_memory_state(self, source=None):
+        windows_state = getattr(self, "_hdr_windows_state", None)
+        if windows_state is None:
+            self._hdr_last_state = None
+            self._hdr_state_source = None
+            self._update_hdr_memory_status_label(source or "信号状态未知")
+            return
+        state = windows_state
+
+        changed = state != getattr(self, "_hdr_last_state", None)
+        self._hdr_last_state = state
+        self._hdr_state_source = "Windows"
+        self._update_hdr_memory_status_label(source)
+        if changed and self._hdr_memory_enabled():
+            self._schedule_hdr_memory_apply()
+
+    def _update_hdr_memory_status_label(self, source=None):
+        label = getattr(self, "hdr_memory_status_label", None)
+        if not label:
+            return
+        enabled = self._hdr_memory_enabled()
+        state = getattr(self, "_hdr_last_state", None)
+        state_text = "未知" if state is None else ("HDR" if state else "SDR")
+        state_source = getattr(self, "_hdr_state_source", None)
+        state_source_text = f"（{state_source}）" if state_source and state is not None else ""
+        memory = self._get_local_dimming_memory()
+        sdr_val = memory.get("sdr")
+        hdr_val = memory.get("hdr")
+        sdr_text = LOCAL_DIMMING_NAMES.get(sdr_val, "--") if isinstance(sdr_val, int) else "--"
+        hdr_text = LOCAL_DIMMING_NAMES.get(hdr_val, "--") if isinstance(hdr_val, int) else "--"
+        prefix = "已开启" if enabled else "已关闭"
+        source_text = f"，{source}" if source and state is None else ""
+        label.setText(f"分区控光记忆：{prefix}，当前信号：{state_text}{state_source_text}，记忆模式：SDR={sdr_text}，HDR={hdr_text}{source_text}")
+
+    def _schedule_hdr_memory_apply(self):
+        timer = getattr(self, "_hdr_memory_apply_timer", None)
+        if not timer:
+            return
+        timer.stop()
+        timer.start(1000)
+
+    def _apply_hdr_memory_for_current_state(self):
+        if not self._hdr_memory_enabled() or not getattr(self, "adb_connected", False):
+            return
+        state = getattr(self, "_hdr_last_state", None)
+        if state is None:
+            return
+        if self._adb_channel_busy():
+            self._schedule_hdr_memory_apply()
+            return
+        bucket = "hdr" if state else "sdr"
+        memory = self._get_local_dimming_memory()
+        value = memory.get(bucket)
+        if not isinstance(value, int):
+            if "picture_local_dimming" in self.current_vals:
+                self._remember_local_dimming_value(self.current_vals.get("picture_local_dimming"), log_change=False, force_bucket=bucket)
+            else:
+                self._read_current_local_dimming_for_memory()
+            return
+        try:
+            current = int(self.current_vals.get("picture_local_dimming"))
+        except Exception:
+            current = None
+        if current == value:
+            return
+        state_name = "HDR" if state else "SDR"
+        value_name = LOCAL_DIMMING_NAMES.get(value, str(value))
+        self._set_local_dimming_for_memory(value, f"{state_name} 精密控光记忆: {value_name}")
+
+    def _set_local_dimming_for_memory(self, value, message):
+        value = max(0, min(3, int(value)))
+        self._mark_adb_busy(2.5)
+        self.current_vals["picture_local_dimming"] = value
+        self.current_vals["tv_picture_video_local_dimming"] = value
+        self.values_signal.emit({
+            "picture_local_dimming": value,
+            "tv_picture_video_local_dimming": value,
+        })
+
+        def do():
+            self.adb.jni_set("g_video__vid_local_dimming", value)
+            self.adb.put("picture_local_dimming", str(value))
+            self.adb.put("tv_picture_video_local_dimming", str(value))
+            self.adb.refresh_pq()
+            self.log(message)
+
+        async_run(do)
+
+    def _read_current_local_dimming_for_memory(self):
+        if self._adb_channel_busy():
+            self._schedule_hdr_memory_apply()
+            return
+        self._mark_adb_busy(1.5)
+
+        def do():
+            try:
+                value = int(self.query_setting_or_jni("picture_local_dimming"))
+            except Exception:
+                return
+            value = max(0, min(3, value))
+            self.values_signal.emit({
+                "picture_local_dimming": value,
+                "tv_picture_video_local_dimming": value,
+            })
+
+        async_run(do)
+
+    def _get_local_dimming_memory(self):
+        memory = load_settings().get("local_dimming_memory", {})
+        result = {}
+        for key in ("sdr", "hdr"):
+            try:
+                value = int(memory.get(key))
+                result[key] = max(0, min(3, value))
+            except Exception:
+                result[key] = None
+        return result
+
+    def _save_local_dimming_memory(self, memory):
+        s = load_settings()
+        s["local_dimming_memory"] = memory
+        save_settings(s)
+        self._update_hdr_memory_status_label()
+
+    def _ensure_local_dimming_memory_defaults(self):
+        memory = self._get_local_dimming_memory()
+        try:
+            current = int(self.current_vals["picture_local_dimming"])
+        except Exception:
+            return
+        current = max(0, min(3, current))
+        changed = False
+        for key in ("sdr", "hdr"):
+            if not isinstance(memory.get(key), int):
+                memory[key] = current
+                changed = True
+        if changed:
+            self._save_local_dimming_memory(memory)
+
+    def _remember_local_dimming_value(self, value, log_change=True, force_bucket=None):
+        if not self._hdr_memory_enabled():
+            return
+        try:
+            value = max(0, min(3, int(value)))
+        except Exception:
+            return
+        bucket = force_bucket
+        if bucket is None:
+            state = getattr(self, "_hdr_last_state", None)
+            if state is None:
+                state = self._query_windows_hdr_state()
+            if state is None:
+                return
+            bucket = "hdr" if state else "sdr"
+        memory = self._get_local_dimming_memory()
+        if memory.get(bucket) == value:
+            return
+        memory[bucket] = value
+        self._save_local_dimming_memory(memory)
+        if log_change:
+            state_name = "HDR" if bucket == "hdr" else "SDR"
+            self.log(f"已记忆 {state_name} 精密控光: {LOCAL_DIMMING_NAMES.get(value, value)}")
+
     def _check_pending_notifications(self, new_vals):
         if not hasattr(self, "pending_notifications"):
             return
@@ -1124,6 +1585,13 @@ class App(FluentWindow):
         try:
             if hasattr(self, "adb_keepalive_timer"):
                 self.adb_keepalive_timer.stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "hdr_memory_timer"):
+                self.hdr_memory_timer.stop()
+            if hasattr(self, "_hdr_memory_apply_timer"):
+                self._hdr_memory_apply_timer.stop()
         except Exception:
             pass
         try:
@@ -1324,6 +1792,9 @@ class App(FluentWindow):
         # 连接状态变化时清除页面缓存
         if was_connected and not self.adb_connected:
             self._page_loaded.clear()
+            self._hdr_last_state = None
+            self._hdr_state_source = None
+            self._update_hdr_memory_status_label("等待显示器连接")
         elif not was_connected and self.adb_connected:
             self._page_loaded.clear()
             # 触发当前页面加载
@@ -1334,6 +1805,7 @@ class App(FluentWindow):
             QTimer.singleShot(1500, self._check_4k_state)
             # 首次连接后同步 ADB 保活守护状态，工具页卡片不需要再手动点检测
             QTimer.singleShot(1800, self._check_guardian_status)
+            QTimer.singleShot(2200, lambda: self._poll_hdr_memory_state("connected"))
         
         if "扫描中" in text:
             status_suffix = "正在扫描内网..."
@@ -1996,6 +2468,19 @@ class App(FluentWindow):
         autostart_layout.addStretch()
         c3_lay.addLayout(autostart_layout)
 
+        hdr_memory_layout = QHBoxLayout()
+        hdr_memory_layout.setSpacing(15)
+        self.chk_hdr_local_dimming_memory = CheckBox("HDR/SDR 分区控光记忆", card3)
+        self.chk_hdr_local_dimming_memory.setChecked(settings.get("hdr_sdr_local_dimming_enabled", False))
+        self.chk_hdr_local_dimming_memory.stateChanged.connect(self._toggle_hdr_local_dimming_memory)
+        hdr_memory_layout.addWidget(self.chk_hdr_local_dimming_memory)
+        hdr_memory_layout.addStretch()
+        c3_lay.addLayout(hdr_memory_layout)
+
+        self.hdr_memory_status_label = BodyLabel("当前信号：未检测", card3)
+        self.hdr_memory_status_label.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 12px;")
+        c3_lay.addWidget(self.hdr_memory_status_label)
+
         grid.addWidget(card3, 2, 0, 1, 2)
 
         # 4K UI Card
@@ -2522,6 +3007,7 @@ class App(FluentWindow):
             if not self.check_connection():
                 return
             v = slider.value()
+            self._mark_adb_busy(2.5)
             def do():
                 if jni_key:
                     self.adb.jni_set(jni_key, v)
@@ -2671,6 +3157,7 @@ class App(FluentWindow):
 
     def _set_mode(self, val, name):
         if not self.check_connection(): return
+        self._mark_adb_busy(3.0)
         self._picture_mode_switch_seq += 1
         seq = self._picture_mode_switch_seq
         self.adb.put("picture_mode", str(val))
@@ -2704,6 +3191,7 @@ class App(FluentWindow):
         mode_name = self._MODE_NAMES[cur]
         w = MessageBox("恢复默认设置", f"你确定要恢复当前模式：{mode_name} 的默认设置吗？", self)
         if w.exec():
+            self._mark_adb_busy(4.0)
             self.adb.jni_set("g_fusion_picture__pic_reset_def_bypicmode", 0)
             self.adb.refresh_pq()
             self.log(f"已恢复 {mode_name} 模式默认设置，等待生效...")
@@ -2724,6 +3212,7 @@ class App(FluentWindow):
 
     def _set(self, k, v, m):
         if not self.check_connection(): return
+        self._mark_adb_busy(2.5)
         # 信号源切换使用 intent 方式
         if k == "mitv.tvplayer.hdmi.last.source":
             self.adb.shell(f"am force-stop com.xiaomi.mitv.tvplayer")
@@ -2740,6 +3229,7 @@ class App(FluentWindow):
 
     def _jni(self, jk, v, sk, m, osd_sk=None):
         if not self.check_connection(): return
+        self._mark_adb_busy(2.5)
         self.adb.jni_set(jk, v)
         self.adb.put(sk, str(v))
         if osd_sk:
@@ -2750,9 +3240,12 @@ class App(FluentWindow):
         if osd_sk:
             self.current_vals[osd_sk] = v
         self._optimistic_highlight(sk, v)
+        if sk == "picture_local_dimming":
+            self._remember_local_dimming_value(v)
 
     def _set_color_temp(self, jv, sv, m):
         if not self.check_connection(): return
+        self._mark_adb_busy(2.5)
         self.adb.jni_set("g_video__clr_temp", jv)
         self.adb.put("picture_color_temperature", str(sv))
         self.adb.refresh_pq()
@@ -2763,6 +3256,7 @@ class App(FluentWindow):
     def _set_color_gain(self, title, settings_key, jni_key, value):
         if not self.check_connection():
             return
+        self._mark_adb_busy(3.0)
         if str(self.current_vals.get("picture_color_temperature")) != str(CUSTOM_COLOR_TEMP_VALUE):
             self.current_vals["picture_color_temperature"] = CUSTOM_COLOR_TEMP_VALUE
             self._optimistic_highlight("picture_color_temperature", CUSTOM_COLOR_TEMP_VALUE)
@@ -2806,6 +3300,7 @@ class App(FluentWindow):
 
     def _fs(self, v):
         if not self.check_connection(): return
+        self._mark_adb_busy(2.5)
         self.adb.put("front_sight_index", str(v))
         if self.adb.get("picture_mode") == "10":
             self.adb.put("picture_mode", "14")
@@ -2821,6 +3316,7 @@ class App(FluentWindow):
 
     def _320(self, on):
         if not self.check_connection(): return
+        self._mark_adb_busy(2.5)
         src = self._get_input_source()
         if src in ("29","30"): self.adb.jni_set("g_fusion_picture__dp_edid_version", 3 if on else 2)
         else: self.adb.jni_set("g_fusion_picture__hdmi_edid_version", 6 if on else 1)
@@ -2831,6 +3327,7 @@ class App(FluentWindow):
 
     def _fsync(self, on):
         if not self.check_connection(): return
+        self._mark_adb_busy(2.5)
         src = self._get_input_source()
         if src in ("29","30"): self.adb.jni_set("g_video__dp_adaptive_sync", 1 if on else 0)
         else: self.adb.jni_set("g_video__freesync_switch", 3 if on else 0)
@@ -2848,6 +3345,7 @@ class App(FluentWindow):
     def _commit_screen_light(self, message, updates):
         if not self.check_connection():
             return
+        self._mark_adb_busy(2.0)
         self.current_vals.update(updates)
         for key, val in updates.items():
             self._optimistic_highlight(key, val)
@@ -2897,6 +3395,7 @@ class App(FluentWindow):
 
     def _key(self, kcode):
         if not self.check_connection(): return
+        self._mark_adb_busy(1.0)
         def do():
             self.adb.key(kcode)
             self.log(f"按键: {kcode}")
@@ -2987,22 +3486,24 @@ class App(FluentWindow):
             self._show_message_box("error", "错误", "请先连接显示器！")
             return
         self.log("正在打开 ADB Shell 终端...")
+        shell_args = ["-s", f"{self.adb.ip}:5555", "shell"]
+        shell_cmd = adb_command_text(shell_args)
         if sys.platform == "win32":
-            subprocess.Popen(f"start cmd /k {ADB} -s {self.adb.ip}:5555 shell", shell=True)
+            subprocess.Popen(f"start cmd /k {shell_cmd}", shell=True)
         elif sys.platform == "darwin":
-            subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{ADB} -s {self.adb.ip}:5555 shell"'])
+            subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{shell_cmd}"'])
         else:
             launched = False
             for term in ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"]:
                 if subprocess.run(["which", term], capture_output=True).returncode == 0:
                     if term == "gnome-terminal":
-                        subprocess.Popen([term, "--", ADB, "-s", f"{self.adb.ip}:5555", "shell"])
+                        subprocess.Popen([term, "--"] + adb_command(shell_args))
                     else:
-                        subprocess.Popen([term, "-e", f"{ADB} -s {self.adb.ip}:5555 shell"])
+                        subprocess.Popen([term, "-e", shell_cmd])
                     launched = True
                     break
             if not launched:
-                self._show_message_box("error", "错误", "未找到可用的终端模拟器，请手动在终端中运行: adb shell")
+                self._show_message_box("error", "错误", f"未找到可用的终端模拟器，请手动在终端中运行: {shell_cmd}")
 
     def _guardian_shell(self, cmd):
         return self.adb.shell(cmd).strip().replace("\r", "")
@@ -3225,6 +3726,8 @@ class App(FluentWindow):
         # 只有 JNI 的 g_video__clr_temp 读数才需要从 MTK 枚举转换。
         self.current_vals.update(vals)
         self._check_pending_notifications(vals)
+        if "picture_local_dimming" in vals:
+            self._remember_local_dimming_value(vals["picture_local_dimming"], log_change=False)
         slider_mappings = {
             "picture_backlight": "backlight",
             "xiaomi_picture_backlight": "backlight",
@@ -3308,6 +3811,7 @@ class App(FluentWindow):
             return
         refresh_seq = getattr(self, "_picture_mode_switch_seq", 0) if page_name == "picturePage" else None
         self._page_loading.add(page_name)
+        self._mark_adb_busy(4.0)
         self._show_loading_overlay(page_name)
         self.log(f"正在刷新 {page_name} 数据...")
 
