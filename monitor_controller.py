@@ -63,6 +63,7 @@ def load_settings():
         "saved_ip": "",
         "hdr_sdr_local_dimming_enabled": False,
         "local_dimming_memory": {"sdr": None, "hdr": None},
+        "local_dimming_toggle_last_value": 3,
     }
     path = get_settings_path()
     data = {}
@@ -358,6 +359,48 @@ PICTURE_MODE_GROUPS = {
     10: {10, 25, 26, 27, 28, 29},
     9: {9},
 }
+PICTURE_SCENE_NAMES = {
+    9: "电影",
+    10: "游戏",
+    11: "Dolby Vision 明亮",
+    12: "Dolby Vision 暗场",
+    13: "Dolby Vision 自定义",
+    14: "标准",
+    15: "HDR 游戏",
+    16: "HDR 图片",
+    17: "HDR 电影",
+    18: "Dolby Vision IQ",
+    19: "Dolby Vision 游戏",
+    21: "Filmmaker",
+    22: "HDR 显示器",
+    23: "HDR Filmmaker",
+    24: "SDR 游戏 FPS",
+    25: "SDR 游戏 RPG",
+    26: "SDR 游戏 RTS",
+    27: "SDR 游戏 MOBA",
+    28: "SDR 游戏 SPT",
+    29: "HDR 游戏 FPS",
+    30: "HDR 游戏 RPG",
+    31: "HDR 游戏 RTS",
+    32: "HDR 游戏 MOBA",
+    33: "HDR 游戏 SPT",
+    34: "SDR PC AdobeRGB",
+    35: "SDR PC DCI-P3",
+    36: "SDR PC CG",
+    37: "SDR PC 暗房",
+    38: "SDR PC sRGB",
+    39: "HDR PC AdobeRGB",
+    40: "HDR PC DCI-P3",
+    41: "HDR PC CG",
+    42: "HDR PC 暗房",
+    43: "HDR PC sRGB",
+    44: "HDR Vivid",
+    64: "标准预设",
+    65: "标准预设",
+    66: "标准预设",
+    67: "标准预设",
+    68: "标准预设",
+}
 
 def get_guardian_apk_path():
     return bundled_resource_path("assets", "adb_guardian", GUARDIAN_APK_NAME) or os.path.join(get_app_base_dir(), "assets", "adb_guardian", GUARDIAN_APK_NAME)
@@ -567,6 +610,7 @@ def async_run(fn): threading.Thread(target=fn, daemon=True).start()
 class OsdHud(QWidget):
     def __init__(self, parent=None):
         super().__init__(None) # Independent floating window!
+        self._hud_size = QSize(360, 112)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
@@ -575,9 +619,11 @@ class OsdHud(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setFixedSize(self._hud_size)
         
         # Outer container frame
         self.frame = QFrame(self)
+        self.frame.setGeometry(0, 0, self._hud_size.width(), self._hud_size.height())
         self.frame.setObjectName("OsdFrame")
         self.frame.setStyleSheet("""
             #OsdFrame {
@@ -619,15 +665,12 @@ class OsdHud(QWidget):
     def show_hud(self, title, val):
         self.title_lbl.setText(title)
         self.val_lbl.setText(val)
-        
-        # Calculate size dynamically based on text layout
-        self.frame.adjustSize()
-        self.resize(self.frame.size())
+        self.frame.setGeometry(0, 0, self._hud_size.width(), self._hud_size.height())
         
         # Center bottom of primary screen
-        screen = QApplication.primaryScreen().geometry()
-        x = (screen.width() - self.width()) // 2
-        y = screen.height() - self.height() - 150 # 150px from bottom offset
+        screen = QApplication.primaryScreen().availableGeometry()
+        x = screen.x() + (screen.width() - self.width()) // 2
+        y = screen.y() + screen.height() - self.height() - 150 # 150px from bottom offset
         self.move(x, y)
         
         self.timer.stop()
@@ -827,6 +870,7 @@ class App(FluentWindow):
     message_signal = pyqtSignal(str, str, str) # type, title, text
     apk_install_finished = pyqtSignal(bool, str, str)
     guardian_status_signal = pyqtSignal(dict)
+    auto_scan_signal = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -888,13 +932,18 @@ class App(FluentWindow):
         self.message_signal.connect(self._show_message_box)
         self.apk_install_finished.connect(self._on_apk_install_finished)
         self.guardian_status_signal.connect(self._apply_guardian_status)
+        self.auto_scan_signal.connect(lambda: self.scan_net(auto=True))
 
         # Setup layout and components
         self.osd = OsdHud(self)
         self.setup_ui()
         self.setup_tray()
         self.current_vals = {}
+        self._local_dimming_toggle_suspended = False
+        self._local_dimming_memory_suppress_until = 0.0
         self._picture_mode_switch_seq = 0
+        self._cycle_hotkey_pending = {}
+        self._cycle_hotkey_timers = {}
         self._adjust_hotkey_pending = {}
         self._adjust_hotkey_timers = {}
         self._adb_busy_until = 0.0
@@ -917,6 +966,7 @@ class App(FluentWindow):
         self.hdr_memory_timer.timeout.connect(lambda: self._poll_hdr_memory_state("timer"))
         self.hdr_memory_timer.start()
         QTimer.singleShot(0, self._update_hdr_memory_status_label)
+        QTimer.singleShot(900, self._auto_connect_on_startup)
         QApplication.instance().aboutToQuit.connect(self.cleanup_before_exit)
 
     def setup_tray(self):
@@ -959,13 +1009,39 @@ class App(FluentWindow):
         self.tray_icon.show()
 
     def show_and_raise(self):
-        self.show()
+        self._restore_main_window()
+        QTimer.singleShot(0, self._restore_main_window)
+        QTimer.singleShot(120, self._restore_main_window)
+
+    def _restore_main_window(self):
+        state = self.windowState()
+        self.setWindowState((state & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
+        self.showNormal()
         self.raise_()
         self.activateWindow()
 
+        if sys.platform == "win32" and user32:
+            try:
+                hwnd = int(self.winId())
+                SW_RESTORE = 9
+                HWND_TOPMOST = -1
+                HWND_NOTOPMOST = -2
+                SWP_NOSIZE = 0x0001
+                SWP_NOMOVE = 0x0002
+                SWP_SHOWWINDOW = 0x0040
+                user32.ShowWindow(hwnd, SW_RESTORE)
+                user32.BringWindowToTop(hwnd)
+                user32.SetForegroundWindow(hwnd)
+                flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
+                user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+            except Exception:
+                pass
+
     def on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger or reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            if self.isVisible():
+            is_minimized = bool(self.windowState() & Qt.WindowState.WindowMinimized)
+            if self.isVisible() and self.isActiveWindow() and not is_minimized:
                 self.hide()
             else:
                 self.show_and_raise()
@@ -1063,6 +1139,10 @@ class App(FluentWindow):
             
         if not hasattr(self, "pending_notifications"):
             self.pending_notifications = {}
+
+        if action == "local_dimming_toggle_off":
+            self._toggle_local_dimming_off_hotkey()
+            return
             
         actions_map = {
             "picture_mode_cycle": (
@@ -1111,40 +1191,120 @@ class App(FluentWindow):
         
         if action not in actions_map:
             return
-            
-        sk, state_tuples, label_name, exec_fn = actions_map[action]
-        curr_val = getattr(self, "current_vals", {}).get(sk, state_tuples[0][0])
-        
+
+        self._stage_cycle_hotkey_action(action, *actions_map[action])
+
+    def _stage_cycle_hotkey_action(self, action, sk, state_tuples, label_name, exec_fn):
+        pending = self._cycle_hotkey_pending.get(action)
+        curr_val = pending.get("value") if pending else getattr(self, "current_vals", {}).get(sk, state_tuples[0][0])
+
         curr_idx = -1
         for idx, (val, name) in enumerate(state_tuples):
             if val == curr_val:
                 curr_idx = idx
                 break
-                
+
         next_idx = (curr_idx + 1) % len(state_tuples)
         next_val, next_name = state_tuples[next_idx]
-        
-        self.pending_notifications[sk] = (next_val, label_name, next_name)
+
+        self._cycle_hotkey_pending[action] = {
+            "sk": sk,
+            "label": label_name,
+            "name": next_name,
+            "value": next_val,
+            "exec": exec_fn,
+        }
+        self._preview_cycle_hotkey_value(sk, next_val)
         if getattr(self, "osd", None):
             self.osd.show_hud(label_name, next_name)
-        
+
+        timer = self._cycle_hotkey_timers.get(action)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(450)
+            timer.timeout.connect(lambda a=action: self._commit_cycle_hotkey_action(a))
+            self._cycle_hotkey_timers[action] = timer
+        timer.start()
+
+    def _preview_cycle_hotkey_value(self, sk, value):
+        self.current_vals[sk] = value
+        if sk == "picture_mode":
+            self._highlight_mode(value)
+            return
+        if sk == "freesync":
+            self.jni_values_signal.emit({sk: value})
+            return
+        self.values_signal.emit({sk: value})
+
+    def _commit_cycle_hotkey_action(self, action):
+        pending = self._cycle_hotkey_pending.pop(action, None)
+        if not pending or not getattr(self, "adb_connected", False):
+            return
+        sk = pending["sk"]
+        next_val = pending["value"]
+        next_name = pending["name"]
         try:
-            exec_fn(next_val, next_name)
-            def verify():
-                for _ in range(6):
-                    time.sleep(0.5)
-                    real_val = self.query_setting_or_jni(sk)
-                    if str(real_val) == str(next_val):
-                        if sk == "freesync":
-                            self.jni_values_signal.emit({sk: real_val})
-                        else:
-                            self.values_signal.emit({sk: real_val})
-                        break
-            async_run(verify)
+            pending["exec"](next_val, next_name)
         except Exception as e:
-            if sk in self.pending_notifications:
-                del self.pending_notifications[sk]
             self.log(f"快捷键执行失败: {e}")
+
+    def _get_current_local_dimming_value(self):
+        val = getattr(self, "current_vals", {}).get("picture_local_dimming")
+        if val is None:
+            val = self.query_setting_or_jni("picture_local_dimming")
+        try:
+            return max(0, min(3, int(val)))
+        except Exception:
+            return 0
+
+    def _get_saved_local_dimming_toggle_value(self):
+        try:
+            val = int(load_settings().get("local_dimming_toggle_last_value", 3))
+        except Exception:
+            val = 3
+        return max(1, min(3, val))
+
+    def _save_local_dimming_toggle_value(self, value):
+        try:
+            value = max(1, min(3, int(value)))
+        except Exception:
+            value = 3
+        settings = load_settings()
+        settings["local_dimming_toggle_last_value"] = value
+        save_settings(settings)
+
+    def _toggle_local_dimming_off_hotkey(self):
+        current = self._get_current_local_dimming_value()
+        if current > 0:
+            self._save_local_dimming_toggle_value(current)
+            target = 0
+            self._local_dimming_toggle_suspended = True
+            message = f"精密控光开关: 已记录 {LOCAL_DIMMING_NAMES.get(current, current)}，切换为关"
+        else:
+            target = self._get_saved_local_dimming_toggle_value()
+            self._local_dimming_toggle_suspended = False
+            message = f"精密控光开关: 恢复 {LOCAL_DIMMING_NAMES.get(target, target)}"
+
+        self._local_dimming_memory_suppress_until = time.monotonic() + 3.0
+        value_name = LOCAL_DIMMING_NAMES.get(target, str(target))
+        if getattr(self, "osd", None):
+            self.osd.show_hud("精密控光", value_name)
+        self._set_local_dimming_toggle_value(target, message)
+
+    def _set_local_dimming_toggle_value(self, value, message):
+        if not self.check_connection():
+            return
+        value = max(0, min(3, int(value)))
+        self._mark_adb_busy(2.5)
+        self.adb.jni_set("g_video__vid_local_dimming", value)
+        self.adb.put("picture_local_dimming", str(value))
+        self.adb.put("tv_picture_video_local_dimming", str(value))
+        self.adb.refresh_pq()
+        self.log(message)
+        self.current_vals["picture_local_dimming"] = value
+        self.current_vals["tv_picture_video_local_dimming"] = value
+        self._optimistic_highlight("picture_local_dimming", value)
 
     def trigger_adjust_hotkey(self, rule):
         if not getattr(self, "adb_connected", False):
@@ -1311,6 +1471,9 @@ class App(FluentWindow):
     def _hdr_memory_enabled(self):
         return bool(load_settings().get("hdr_sdr_local_dimming_enabled", False))
 
+    def _close_behavior_is_direct_exit(self):
+        return load_settings().get("close_behavior", "tray") == "exit"
+
     def _toggle_hdr_local_dimming_memory(self, state):
         try:
             state_val = int(state)
@@ -1341,6 +1504,9 @@ class App(FluentWindow):
         if getattr(self, "_page_loading", None):
             return True
         for timer in getattr(self, "_adjust_hotkey_timers", {}).values():
+            if timer.isActive():
+                return True
+        for timer in getattr(self, "_cycle_hotkey_timers", {}).values():
             if timer.isActive():
                 return True
         return False
@@ -1413,7 +1579,13 @@ class App(FluentWindow):
         hdr_text = LOCAL_DIMMING_NAMES.get(hdr_val, "--") if isinstance(hdr_val, int) else "--"
         prefix = "已开启" if enabled else "已关闭"
         source_text = f"，{source}" if source and state is None else ""
-        label.setText(f"分区控光记忆：{prefix}，当前信号：{state_text}{state_source_text}，记忆模式：SDR={sdr_text}，HDR={hdr_text}{source_text}")
+        runtime_note = ""
+        if enabled and self._close_behavior_is_direct_exit():
+            runtime_note = "；已选择直接退出，此功能仅在应用运行时生效"
+            label.setStyleSheet("color: #d83b01; font-size: 12px;")
+        else:
+            label.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 12px;")
+        label.setText(f"分区控光记忆：{prefix}，当前信号：{state_text}{state_source_text}，记忆模式：SDR={sdr_text}，HDR={hdr_text}{source_text}{runtime_note}")
 
     def _schedule_hdr_memory_apply(self):
         timer = getattr(self, "_hdr_memory_apply_timer", None)
@@ -1448,6 +1620,8 @@ class App(FluentWindow):
             return
         state_name = "HDR" if state else "SDR"
         value_name = LOCAL_DIMMING_NAMES.get(value, str(value))
+        if getattr(self, "osd", None):
+            self.osd.show_hud(f"{state_name} 精密控光", value_name)
         self._set_local_dimming_for_memory(value, f"{state_name} 精密控光记忆: {value_name}")
 
     def _set_local_dimming_for_memory(self, value, message):
@@ -1526,6 +1700,10 @@ class App(FluentWindow):
         try:
             value = max(0, min(3, int(value)))
         except Exception:
+            return
+        if time.monotonic() < getattr(self, "_local_dimming_memory_suppress_until", 0.0):
+            return
+        if value == 0 and getattr(self, "_local_dimming_toggle_suspended", False):
             return
         bucket = force_bucket
         if bucket is None:
@@ -2060,6 +2238,10 @@ class App(FluentWindow):
         reset_mode_btn.setFixedWidth(100)
         reset_mode_btn.clicked.connect(self._reset_current_mode)
         h.addWidget(reset_mode_btn)
+        self.picture_mode_hint_label = BodyLabel("当前场景：未刷新", lf)
+        self.picture_mode_hint_label.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 12px;")
+        h.addWidget(self.picture_mode_hint_label)
+        h.addStretch(1)
         lf_layout.addLayout(h)
         layout.addWidget(lf)
 
@@ -2242,10 +2424,12 @@ class App(FluentWindow):
 
         lbl = BodyLabel("当前活跃信号源", status_card)
         lbl.setStyleSheet("font-size: 14px; color: rgba(255, 255, 255, 0.6);")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         status_layout.addWidget(lbl)
 
         self.source_label = TitleLabel("未知", status_card)
         self.source_label.setStyleSheet("color: #00bcd4; font-size: 32px; font-weight: bold; margin-top: 10px;")
+        self.source_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         status_layout.addWidget(self.source_label)
 
         layout.addWidget(status_card)
@@ -2442,14 +2626,18 @@ class App(FluentWindow):
         def on_choose_tray():
             self.btn_setting_tray.setChecked(True)
             self.btn_setting_exit.setChecked(False)
-            settings["close_behavior"] = "tray"
-            save_settings(settings)
+            s = load_settings()
+            s["close_behavior"] = "tray"
+            save_settings(s)
+            self._update_hdr_memory_status_label()
             
         def on_choose_exit():
             self.btn_setting_tray.setChecked(False)
             self.btn_setting_exit.setChecked(True)
-            settings["close_behavior"] = "exit"
-            save_settings(settings)
+            s = load_settings()
+            s["close_behavior"] = "exit"
+            save_settings(s)
+            self._update_hdr_memory_status_label()
             
         self.btn_setting_tray.clicked.connect(on_choose_tray)
         self.btn_setting_exit.clicked.connect(on_choose_exit)
@@ -2558,6 +2746,7 @@ class App(FluentWindow):
         actions_list = [
             ("picture_mode_cycle", "画面模式 循环切换"),
             ("local_dimming_cycle", "精密控光 循环切换"),
+            ("local_dimming_toggle_off", "精密控光 开关切换"),
             ("color_space_cycle", "色域 循环切换"),
             ("color_temp_cycle", "色温 循环切换"),
             ("response_time_cycle", "响应时间 循环切换"),
@@ -3154,6 +3343,38 @@ class App(FluentWindow):
         for m, btn in self.mode_btns.items():
             group = PICTURE_MODE_GROUPS.get(m, {m})
             self._highlight_btn(btn, mode_int in group or str(m) == str(mode))
+        self._update_picture_mode_hint(mode_int)
+
+    def _picture_mode_group_name(self, mode):
+        for primary, name in ((14, "标准"), (10, "游戏"), (9, "电影")):
+            if mode in PICTURE_MODE_GROUPS.get(primary, {primary}):
+                return name
+        return None
+
+    def _update_picture_mode_hint(self, mode):
+        label = getattr(self, "picture_mode_hint_label", None)
+        if not label:
+            return
+
+        try:
+            mode_int = int(mode)
+        except Exception:
+            mode_int = None
+
+        if mode_int is None:
+            label.setText(f"当前场景：未知（{mode}）")
+            label.setStyleSheet("color: #f0b85a; font-size: 12px;")
+            return
+
+        group_name = self._picture_mode_group_name(mode_int)
+        if group_name:
+            label.setText(f"当前场景：{group_name}（{mode_int}）")
+            label.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 12px;")
+            return
+
+        scene_name = PICTURE_SCENE_NAMES.get(mode_int, "未知场景")
+        label.setText(f"当前场景：{scene_name}（{mode_int}），不匹配上方模式按钮")
+        label.setStyleSheet("color: #f0b85a; font-size: 12px;")
 
     def _set_mode(self, val, name):
         if not self.check_connection(): return
@@ -3241,6 +3462,8 @@ class App(FluentWindow):
             self.current_vals[osd_sk] = v
         self._optimistic_highlight(sk, v)
         if sk == "picture_local_dimming":
+            self._local_dimming_toggle_suspended = False
+            self._local_dimming_memory_suppress_until = 0.0
             self._remember_local_dimming_value(v)
 
     def _set_color_temp(self, jv, sv, m):
@@ -3418,6 +3641,36 @@ class App(FluentWindow):
             async_run(do)
 
     # ===== ADB & Connect Slots =====
+    def _auto_connect_on_startup(self):
+        if getattr(self, "adb_connected", False):
+            return
+
+        saved_ip = load_settings().get("saved_ip", "").strip()
+        if not saved_ip:
+            self.log("启动自动连接: 未找到上次设备，开始扫描内网")
+            self.auto_scan_signal.emit()
+            return
+
+        self.ip_entry.setText(saved_ip)
+        self.adb.ip = saved_ip
+        self.status_signal.emit("连接中...")
+        self.log(f"启动自动连接: 尝试连接上次设备 {saved_ip}")
+
+        def do():
+            ok = self.adb.connect()
+            if ok:
+                self.status_signal.emit("已连接")
+                self.log(f"启动自动连接成功: {self.adb.ip}")
+                self.adb.check_and_heal_jar()
+                m = self.adb.get_model()
+                self.status_signal.emit(f"已连接: {m}")
+            else:
+                self.log(f"启动自动连接失败: {saved_ip}，开始扫描内网")
+                self.status_signal.emit("未连接")
+                self.auto_scan_signal.emit()
+
+        async_run(do)
+
     def connect(self):
         ip = self.ip_entry.text().strip()
         if not ip:
@@ -3441,11 +3694,14 @@ class App(FluentWindow):
                 self.log("连接失败")
         async_run(do)
 
-    def scan_net(self):
+    def scan_net(self, auto=False):
+        if getattr(self, "adb_connected", False):
+            self.log("已连接显示器，跳过自动扫描" if auto else "已连接显示器，如需重新扫描请先断开连接")
+            return
         self.status_signal.emit("扫描中...")
         self.dev_combo.clear()
         subnet = get_local_subnet()
-        self.log(f"扫描 {subnet}.x ...")
+        self.log(f"{'启动自动扫描' if auto else '扫描'} {subnet}.x ...")
         
         found_devices = []
         def do():
