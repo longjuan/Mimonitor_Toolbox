@@ -953,6 +953,9 @@ class App(FluentWindow):
         self._hdr_memory_apply_timer = QTimer(self)
         self._hdr_memory_apply_timer.setSingleShot(True)
         self._hdr_memory_apply_timer.timeout.connect(self._apply_hdr_memory_for_current_state)
+        self._hdr_picture_refresh_timer = QTimer(self)
+        self._hdr_picture_refresh_timer.setSingleShot(True)
+        self._hdr_picture_refresh_timer.timeout.connect(lambda: self._refresh_picture_data_after_hdr_change())
         self.register_global_hotkeys()
 
         # 页面切换时按需加载数据
@@ -1527,10 +1530,6 @@ class App(FluentWindow):
         if hasattr(self, "hdr_memory_timer") and self.hdr_memory_timer.interval() != target_interval:
             self.hdr_memory_timer.setInterval(target_interval)
 
-        if not self._hdr_memory_enabled():
-            self._update_hdr_memory_status_label()
-            return
-
         win_state = self._query_windows_hdr_state()
         if win_state is None:
             self._hdr_windows_state = None
@@ -1560,8 +1559,45 @@ class App(FluentWindow):
         self._hdr_last_state = state
         self._hdr_state_source = "Windows"
         self._update_hdr_memory_status_label(source)
-        if changed and self._hdr_memory_enabled():
-            self._schedule_hdr_memory_apply()
+        if changed:
+            memory_enabled = self._hdr_memory_enabled()
+            if memory_enabled:
+                self._schedule_hdr_memory_apply(delay_ms=120)
+            self._schedule_picture_refresh_after_hdr_change(
+                state,
+                initial_delay_ms=300 if memory_enabled else 0,
+            )
+
+    def _schedule_picture_refresh_after_hdr_change(self, state, initial_delay_ms=0):
+        if not getattr(self, "adb_connected", False):
+            return
+        state_name = "HDR" if state else "SDR"
+        self.log(f"检测到 Windows HDR 切换为 {state_name}，刷新画面数据...")
+        self._page_loaded.discard("picturePage")
+        QTimer.singleShot(initial_delay_ms, lambda: self._refresh_picture_data_after_hdr_change())
+        timer = getattr(self, "_hdr_picture_refresh_timer", None)
+        if timer:
+            timer.stop()
+            timer.start(3500)
+
+    def _refresh_picture_data_after_hdr_change(self, retries=8):
+        if not getattr(self, "adb_connected", False):
+            return
+        apply_timer = getattr(self, "_hdr_memory_apply_timer", None)
+        if apply_timer and apply_timer.isActive():
+            if retries > 0:
+                QTimer.singleShot(400, lambda r=retries - 1: self._refresh_picture_data_after_hdr_change(r))
+            return
+        if self._adb_channel_busy():
+            if retries > 0:
+                QTimer.singleShot(400, lambda r=retries - 1: self._refresh_picture_data_after_hdr_change(r))
+            return
+        self._page_loaded.discard("picturePage")
+        if "picturePage" in getattr(self, "_page_loading", set()):
+            if retries > 0:
+                QTimer.singleShot(400, lambda r=retries - 1: self._refresh_picture_data_after_hdr_change(r))
+            return
+        self._refresh_page_data("picturePage")
 
     def _update_hdr_memory_status_label(self, source=None):
         label = getattr(self, "hdr_memory_status_label", None)
@@ -1587,12 +1623,12 @@ class App(FluentWindow):
             label.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 12px;")
         label.setText(f"分区控光记忆：{prefix}，当前信号：{state_text}{state_source_text}，记忆模式：SDR={sdr_text}，HDR={hdr_text}{source_text}{runtime_note}")
 
-    def _schedule_hdr_memory_apply(self):
+    def _schedule_hdr_memory_apply(self, delay_ms=250):
         timer = getattr(self, "_hdr_memory_apply_timer", None)
         if not timer:
             return
         timer.stop()
-        timer.start(1000)
+        timer.start(delay_ms)
 
     def _apply_hdr_memory_for_current_state(self):
         if not self._hdr_memory_enabled() or not getattr(self, "adb_connected", False):
@@ -1607,10 +1643,6 @@ class App(FluentWindow):
         memory = self._get_local_dimming_memory()
         value = memory.get(bucket)
         if not isinstance(value, int):
-            if "picture_local_dimming" in self.current_vals:
-                self._remember_local_dimming_value(self.current_vals.get("picture_local_dimming"), log_change=False, force_bucket=bucket)
-            else:
-                self._read_current_local_dimming_for_memory()
             return
         try:
             current = int(self.current_vals.get("picture_local_dimming"))
@@ -1696,6 +1728,8 @@ class App(FluentWindow):
 
     def _remember_local_dimming_value(self, value, log_change=True, force_bucket=None):
         if not self._hdr_memory_enabled():
+            return
+        if not log_change:
             return
         try:
             value = max(0, min(3, int(value)))
@@ -3982,8 +4016,6 @@ class App(FluentWindow):
         # 只有 JNI 的 g_video__clr_temp 读数才需要从 MTK 枚举转换。
         self.current_vals.update(vals)
         self._check_pending_notifications(vals)
-        if "picture_local_dimming" in vals:
-            self._remember_local_dimming_value(vals["picture_local_dimming"], log_change=False)
         slider_mappings = {
             "picture_backlight": "backlight",
             "xiaomi_picture_backlight": "backlight",
