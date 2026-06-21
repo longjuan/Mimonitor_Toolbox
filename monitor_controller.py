@@ -7,6 +7,7 @@ import socket
 import threading
 import time
 import ctypes
+import tempfile
 
 # Native Windows Hotkey support variables
 user32 = None
@@ -26,12 +27,12 @@ if sys.platform == "win32":
         user32 = ctypes.windll.user32
     except Exception as e:
         print(f"Failed to load user32: {e}")
-from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject, QTimer, QEasingCurve, QPropertyAnimation
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer, QEasingCurve, QPropertyAnimation
 from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QPen
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QFrame, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QSpacerItem, QSizePolicy, QFileDialog, QTextEdit,
+    QGridLayout, QSizePolicy, QFileDialog, QTextEdit,
     QSystemTrayIcon, QMenu, QDialog, QGraphicsDropShadowEffect, QLabel
 )
 from qfluentwidgets import (
@@ -43,6 +44,8 @@ from qfluentwidgets import (
 NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 import json
+
+_settings_lock = threading.RLock()
 
 def get_app_data_dir():
     if sys.platform == "win32":
@@ -58,7 +61,7 @@ def get_settings_path():
     folder = get_app_data_dir()
     return os.path.join(folder, "config.json")
 
-def load_settings():
+def _load_settings_unlocked():
     defaults = {
         "close_behavior": "tray",
         "never_ask_close": False,
@@ -88,13 +91,39 @@ def load_settings():
     }
     return merged
 
-def save_settings(s):
+def load_settings():
+    with _settings_lock:
+        return _load_settings_unlocked()
+
+def _write_settings_unlocked(settings):
     path = get_settings_path()
+    temp_path = None
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(s, f, indent=4, ensure_ascii=False)
+        fd, temp_path = tempfile.mkstemp(prefix="config.", suffix=".tmp", dir=os.path.dirname(path))
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=4, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+        return True
     except Exception:
-        pass
+        return False
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+def save_settings(settings):
+    with _settings_lock:
+        return _write_settings_unlocked(settings)
+
+def update_settings(changes):
+    with _settings_lock:
+        settings = _load_settings_unlocked()
+        settings.update(changes)
+        return _write_settings_unlocked(settings)
 
 def get_local_subnet():
     """获取本机网段前缀，如 192.168.5"""
@@ -419,6 +448,8 @@ _log_path = None
 _log_to_file_enabled = False
 _adb_processes = set()
 _adb_spawn_blocked = False
+_adb_command_lock = threading.RLock()
+_adb_process_lock = threading.RLock()
 
 def adb_command(args):
     cmd = [ADB]
@@ -440,46 +471,59 @@ def _adb_log(msg):
             _log_file.flush()
         except: pass
 
-def adb_run(args, timeout=10):
-    if _adb_spawn_blocked:
-        _adb_log(f"{adb_command_text(args)} => SKIPPED: shutting down")
-        return ""
+def adb_run(args, timeout=10, check=False):
     proc = None
-    try:
-        cmd = adb_command(args)
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
-        _adb_processes.add(proc)
-        stdout, stderr = proc.communicate(timeout=timeout)
-        out = stdout.strip()
-        if not out and stderr:
-            out = stderr.strip()
-        _adb_log(f"{adb_command_text(args)} => {out[:200]}")
-        return out
-    except subprocess.TimeoutExpired:
-        if proc:
-            proc.kill()
-            try:
-                proc.communicate(timeout=1)
-            except Exception:
-                pass
-        _adb_log(f"{adb_command_text(args)} => TIMEOUT")
-        return ""
-    except Exception as e:
-        _adb_log(f"{adb_command_text(args)} => ERROR: {e}")
-        return ""
-    finally:
-        if proc:
-            _adb_processes.discard(proc)
+    with _adb_command_lock:
+        try:
+            cmd = adb_command(args)
+            with _adb_process_lock:
+                if _adb_spawn_blocked:
+                    _adb_log(f"{adb_command_text(args)} => SKIPPED: shutting down")
+                    if check:
+                        raise RuntimeError("应用正在退出，ADB 命令已取消")
+                    return ""
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        text=True, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
+                _adb_processes.add(proc)
+            stdout, stderr = proc.communicate(timeout=timeout)
+            out = stdout.strip()
+            if not out and stderr:
+                out = stderr.strip()
+            _adb_log(f"{adb_command_text(args)} => {out[:200]}")
+            if check and proc.returncode not in (0, None):
+                raise RuntimeError(out or f"ADB 进程退出码 {proc.returncode}")
+            return out
+        except subprocess.TimeoutExpired:
+            if proc:
+                proc.kill()
+                try:
+                    proc.communicate(timeout=1)
+                except Exception:
+                    pass
+            _adb_log(f"{adb_command_text(args)} => TIMEOUT")
+            if check:
+                raise RuntimeError(f"ADB 命令超时（{timeout} 秒）")
+            return ""
+        except Exception as e:
+            _adb_log(f"{adb_command_text(args)} => ERROR: {e}")
+            if check:
+                raise
+            return ""
+        finally:
+            if proc:
+                with _adb_process_lock:
+                    _adb_processes.discard(proc)
 
 def cleanup_adb_processes(kill_server=False):
-    for proc in list(_adb_processes):
+    with _adb_process_lock:
+        processes = list(_adb_processes)
+        _adb_processes.clear()
+    for proc in processes:
         try:
             if proc.poll() is None:
                 proc.kill()
         except Exception:
             pass
-        _adb_processes.discard(proc)
     if kill_server:
         try:
             subprocess.run(adb_command(["kill-server"]), capture_output=True, text=True, timeout=3,
@@ -489,93 +533,103 @@ def cleanup_adb_processes(kill_server=False):
 
 def block_adb_spawns():
     global _adb_spawn_blocked
-    _adb_spawn_blocked = True
+    with _adb_process_lock:
+        _adb_spawn_blocked = True
 
 def unblock_adb_spawns():
     global _adb_spawn_blocked
-    _adb_spawn_blocked = False
+    with _adb_process_lock:
+        _adb_spawn_blocked = False
 
 
 class Adb:
     def __init__(self, ip="192.168.5.205"): self.ip = ip
-    def shell(self, cmd):
-        out = adb_run(["-s", f"{self.ip}:5555", "shell", cmd])
+    def transaction(self):
+        return _adb_command_lock
+    def shell(self, cmd, check=False):
+        out = adb_run(["-s", f"{self.ip}:5555", "shell", cmd], check=check)
         return out
     def check_and_heal_jar(self):
-        sd_size_lines = self.shell("stat -c %s /sdcard/MtkDirectTool.jar 2>/dev/null || echo 0").strip().splitlines()
-        sd_size_text = sd_size_lines[-1] if sd_size_lines else "0"
-        try:
-            sd_size = int(sd_size_text)
-        except Exception:
-            sd_size = 0
-        if sd_size < 1000:
-            local_jar = get_mtk_direct_tool_path()
-            if local_jar:
-                adb_run(["-s", f"{self.ip}:5555", "push", local_jar, "/sdcard/MtkDirectTool.jar"])
-            else:
-                _adb_log("WARNING: MtkDirectTool.jar 本地未找到，无法推送到设备")
-                return
-        jar = "/data/data/mitv.service/cache/MtkDirectTool.jar"
-        self.shell(f'service call TvService 3 s16 "cp /sdcard/MtkDirectTool.jar {jar}"')
-    def check_and_heal_colorful_led_tool(self):
-        sd_size_lines = self.shell("stat -c %s /sdcard/ColorfulLedTool.jar 2>/dev/null || echo 0").strip().splitlines()
-        sd_size_text = sd_size_lines[-1] if sd_size_lines else "0"
-        try:
-            sd_size = int(sd_size_text)
-        except Exception:
-            sd_size = 0
-        if sd_size < 1000:
-            local_jar = get_colorful_led_tool_path()
-            if local_jar:
-                adb_run(["-s", f"{self.ip}:5555", "push", local_jar, "/sdcard/ColorfulLedTool.jar"])
-            else:
-                _adb_log("WARNING: ColorfulLedTool.jar 本地未找到，无法推送到设备")
-                return False
-        jar = "/data/data/mitv.service/cache/ColorfulLedTool.jar"
-        self.shell(f'service call TvService 3 s16 "cp /sdcard/ColorfulLedTool.jar {jar}"')
-        return True
+        with self.transaction():
+            sd_size_lines = self.shell("stat -c %s /sdcard/MtkDirectTool.jar 2>/dev/null || echo 0").strip().splitlines()
+            sd_size_text = sd_size_lines[-1] if sd_size_lines else "0"
+            try:
+                sd_size = int(sd_size_text)
+            except Exception:
+                sd_size = 0
+            if sd_size < 1000:
+                local_jar = get_mtk_direct_tool_path()
+                if local_jar:
+                    adb_run(["-s", f"{self.ip}:5555", "push", local_jar, "/sdcard/MtkDirectTool.jar"])
+                else:
+                    _adb_log("WARNING: MtkDirectTool.jar 本地未找到，无法推送到设备")
+                    return
+            jar = "/data/data/mitv.service/cache/MtkDirectTool.jar"
+            self.shell(f'service call TvService 3 s16 "cp /sdcard/MtkDirectTool.jar {jar}"')
+    def check_and_heal_colorful_led_tool(self, check=False):
+        with self.transaction():
+            sd_size_lines = self.shell("stat -c %s /sdcard/ColorfulLedTool.jar 2>/dev/null || echo 0", check=check).strip().splitlines()
+            sd_size_text = sd_size_lines[-1] if sd_size_lines else "0"
+            try:
+                sd_size = int(sd_size_text)
+            except Exception:
+                sd_size = 0
+            if sd_size < 1000:
+                local_jar = get_colorful_led_tool_path()
+                if local_jar:
+                    adb_run(["-s", f"{self.ip}:5555", "push", local_jar, "/sdcard/ColorfulLedTool.jar"], check=check)
+                else:
+                    _adb_log("WARNING: ColorfulLedTool.jar 本地未找到，无法推送到设备")
+                    return False
+            jar = "/data/data/mitv.service/cache/ColorfulLedTool.jar"
+            self.shell(f'service call TvService 3 s16 "cp /sdcard/ColorfulLedTool.jar {jar}"', check=check)
+            return True
     def connect(self):
         o = adb_run(["connect", f"{self.ip}:5555"])
         return "connected" in o and "cannot" not in o
-    def get(self, k):
-        v = self.shell(f"settings get global {k}")
+    def get(self, k, check=False):
+        v = self.shell(f"settings get global {k}", check=check)
         _adb_log(f"settings get {k} => {v}")
         return v
-    def put(self, k, v):
+    def put(self, k, v, check=False):
         _adb_log(f"settings put {k} = {v}")
-        self.shell(f"settings put global {k} {v}")
-    def key(self, k):
+        return self.shell(f"settings put global {k} {v}", check=check)
+    def key(self, k, check=False):
         _adb_log(f"keyevent {k}")
-        self.shell(f"input keyevent {k}")
-    def colorful_led(self, action, *args):
-        _adb_log(f"colorful_led {action} {' '.join(map(str, args))}")
-        if not self.check_and_heal_colorful_led_tool():
-            return ""
-        jar = "/data/data/mitv.service/cache/ColorfulLedTool.jar"
-        parts = ["ColorfulLedTool", str(action)] + [str(a) for a in args]
-        cmd_args = "".join([f"\\${{IFS}}{p}" for p in parts])
-        return self.shell(f'service call TvService 3 s16 "sh -c eval\\${{IFS}}CLASSPATH={jar}\\${{IFS}}/system/bin/app_process\\${{IFS}}/data/data/mitv.service/cache{cmd_args}"')
-    def jni_set(self, key, val, upd=3):
+        return self.shell(f"input keyevent {k}", check=check)
+    def colorful_led(self, action, *args, check=False):
+        with self.transaction():
+            _adb_log(f"colorful_led {action} {' '.join(map(str, args))}")
+            if not self.check_and_heal_colorful_led_tool(check=check):
+                return ""
+            jar = "/data/data/mitv.service/cache/ColorfulLedTool.jar"
+            parts = ["ColorfulLedTool", str(action)] + [str(a) for a in args]
+            cmd_args = "".join([f"\\${{IFS}}{p}" for p in parts])
+            return self.shell(f'service call TvService 3 s16 "sh -c eval\\${{IFS}}CLASSPATH={jar}\\${{IFS}}/system/bin/app_process\\${{IFS}}/data/data/mitv.service/cache{cmd_args}"', check=check)
+    def jni_set(self, key, val, upd=3, check=False):
         _adb_log(f"jni_set {key} = {val}")
         jar = "/data/data/mitv.service/cache/MtkDirectTool.jar"
-        self.shell(f'service call TvService 3 s16 "sh -c eval\\${{IFS}}CLASSPATH={jar}\\${{IFS}}/system/bin/app_process\\${{IFS}}/data/data/mitv.service/cache\\${{IFS}}MtkDirectTool\\${{IFS}}set\\${{IFS}}{key}\\${{IFS}}{val}\\${{IFS}}{upd}"')
-    def jni_set_color_gains(self, red, green, blue):
+        return self.shell(f'service call TvService 3 s16 "sh -c eval\\${{IFS}}CLASSPATH={jar}\\${{IFS}}/system/bin/app_process\\${{IFS}}/data/data/mitv.service/cache\\${{IFS}}MtkDirectTool\\${{IFS}}set\\${{IFS}}{key}\\${{IFS}}{val}\\${{IFS}}{upd}"', check=check)
+    def jni_set_color_gains(self, red, green, blue, check=False):
         _adb_log(f"jni_set_color_gains r={red} g={green} b={blue}")
         jar = "/data/data/mitv.service/cache/MtkDirectTool.jar"
-        self.shell(f'service call TvService 3 s16 "sh -c eval\\${{IFS}}CLASSPATH={jar}\\${{IFS}}/system/bin/app_process\\${{IFS}}/data/data/mitv.service/cache\\${{IFS}}MtkDirectTool\\${{IFS}}setColorGains\\${{IFS}}{red}\\${{IFS}}{green}\\${{IFS}}{blue}"')
-    def jni_get(self, key):
-        jar = "/data/data/mitv.service/cache/MtkDirectTool.jar"
-        self.shell("logcat -c")
-        self.shell(f'service call TvService 3 s16 "sh -c eval\\${{IFS}}CLASSPATH={jar}\\${{IFS}}/system/bin/app_process\\${{IFS}}/data/data/mitv.service/cache\\${{IFS}}MtkDirectTool\\${{IFS}}get\\${{IFS}}{key}"')
-        time.sleep(0.8)
-        log = self.shell(f"logcat -d | grep 'GET {key}' | tail -1")
+        return self.shell(f'service call TvService 3 s16 "sh -c eval\\${{IFS}}CLASSPATH={jar}\\${{IFS}}/system/bin/app_process\\${{IFS}}/data/data/mitv.service/cache\\${{IFS}}MtkDirectTool\\${{IFS}}setColorGains\\${{IFS}}{red}\\${{IFS}}{green}\\${{IFS}}{blue}"', check=check)
+    def jni_get(self, key, check=False):
+        with self.transaction():
+            jar = "/data/data/mitv.service/cache/MtkDirectTool.jar"
+            self.shell("logcat -c", check=check)
+            self.shell(f'service call TvService 3 s16 "sh -c eval\\${{IFS}}CLASSPATH={jar}\\${{IFS}}/system/bin/app_process\\${{IFS}}/data/data/mitv.service/cache\\${{IFS}}MtkDirectTool\\${{IFS}}get\\${{IFS}}{key}"', check=check)
+            time.sleep(0.8)
+            log = self.shell(f"logcat -d | grep 'GET {key}' | tail -1", check=check)
         i = log.find("= ")
+        if check and i < 0:
+            raise RuntimeError(f"未读取到 JNI 值：{key}")
         v = log[i+2:].strip() if i >= 0 else "N/A"
         _adb_log(f"jni_get {key} => {v}")
         return v
-    def refresh_pq(self):
+    def refresh_pq(self, check=False):
         _adb_log("refresh_pq")
-        self.shell("am broadcast -a com.xiaomi.mitv.action.PIC_MODE_CHANGED --ei picmode 7")
+        return self.shell("am broadcast -a com.xiaomi.mitv.action.PIC_MODE_CHANGED --ei picmode 7", check=check)
     def get_model(self):
         m = self.shell("getprop ro.product.model")
         _adb_log(f"get_model => {m}")
@@ -885,6 +939,8 @@ class App(FluentWindow):
     apk_install_finished = pyqtSignal(bool, str, str)
     guardian_status_signal = pyqtSignal(dict)
     auto_scan_signal = pyqtSignal()
+    page_refresh_finished = pyqtSignal(str, bool)
+    adb_action_finished = pyqtSignal(object, bool, str)
 
     def __init__(self):
         super().__init__()
@@ -948,6 +1004,8 @@ class App(FluentWindow):
         self.apk_install_finished.connect(self._on_apk_install_finished)
         self.guardian_status_signal.connect(self._apply_guardian_status)
         self.auto_scan_signal.connect(lambda: self.scan_net(auto=True))
+        self.page_refresh_finished.connect(self._finish_page_refresh)
+        self.adb_action_finished.connect(self._finish_adb_action)
 
         # Setup layout and components
         self.osd = OsdHud(self)
@@ -959,8 +1017,11 @@ class App(FluentWindow):
         self._picture_mode_switch_seq = 0
         self._cycle_hotkey_pending = {}
         self._cycle_hotkey_timers = {}
+        self._control_rollback_values = {}
         self._adjust_hotkey_pending = {}
         self._adjust_hotkey_timers = {}
+        self._adjust_hotkey_resolving = set()
+        self._local_dimming_toggle_resolving = False
         self._adb_busy_until = 0.0
         self._hdr_last_state = None
         self._hdr_state_source = None
@@ -1227,6 +1288,7 @@ class App(FluentWindow):
     def _stage_cycle_hotkey_action(self, action, sk, state_tuples, label_name, exec_fn):
         pending = self._cycle_hotkey_pending.get(action)
         curr_val = pending.get("value") if pending else getattr(self, "current_vals", {}).get(sk, state_tuples[0][0])
+        original_value = pending.get("original") if pending else curr_val
 
         curr_idx = -1
         for idx, (val, name) in enumerate(state_tuples):
@@ -1242,6 +1304,7 @@ class App(FluentWindow):
             "label": label_name,
             "name": next_name,
             "value": next_val,
+            "original": original_value,
             "exec": exec_fn,
         }
         self._preview_cycle_hotkey_value(sk, next_val)
@@ -1274,15 +1337,20 @@ class App(FluentWindow):
         sk = pending["sk"]
         next_val = pending["value"]
         next_name = pending["name"]
+        self._control_rollback_values[sk] = pending.get("original")
         try:
             pending["exec"](next_val, next_name)
         except Exception as e:
+            self._control_rollback_values.pop(sk, None)
             self.log(f"快捷键执行失败: {e}")
+
+    def _take_control_previous(self, key):
+        if key in self._control_rollback_values:
+            return self._control_rollback_values.pop(key)
+        return self.current_vals.get(key)
 
     def _get_current_local_dimming_value(self):
         val = getattr(self, "current_vals", {}).get("picture_local_dimming")
-        if val is None:
-            val = self.query_setting_or_jni("picture_local_dimming")
         try:
             return max(0, min(3, int(val)))
         except Exception:
@@ -1300,11 +1368,29 @@ class App(FluentWindow):
             value = max(1, min(3, int(value)))
         except Exception:
             value = 3
-        settings = load_settings()
-        settings["local_dimming_toggle_last_value"] = value
-        save_settings(settings)
+        update_settings({"local_dimming_toggle_last_value": value})
 
     def _toggle_local_dimming_off_hotkey(self):
+        if "picture_local_dimming" not in self.current_vals:
+            if self._local_dimming_toggle_resolving:
+                return
+            self._local_dimming_toggle_resolving = True
+            result = {}
+
+            def operation():
+                result["value"] = self.query_setting_or_jni("picture_local_dimming", check=True)
+
+            def success():
+                self._local_dimming_toggle_resolving = False
+                self.current_vals["picture_local_dimming"] = result["value"]
+                self._toggle_local_dimming_off_hotkey()
+
+            def failure():
+                self._local_dimming_toggle_resolving = False
+
+            self._run_adb_action("读取精密控光", operation, success, failure)
+            return
+
         current = self._get_current_local_dimming_value()
         if current > 0:
             self._save_local_dimming_toggle_value(current)
@@ -1327,14 +1413,27 @@ class App(FluentWindow):
             return
         value = max(0, min(3, int(value)))
         self._mark_adb_busy(2.5)
-        self.adb.jni_set("g_video__vid_local_dimming", value)
-        self.adb.put("picture_local_dimming", str(value))
-        self.adb.put("tv_picture_video_local_dimming", str(value))
-        self.adb.refresh_pq()
-        self.log(message)
-        self.current_vals["picture_local_dimming"] = value
-        self.current_vals["tv_picture_video_local_dimming"] = value
-        self._optimistic_highlight("picture_local_dimming", value)
+        previous = self.current_vals.get("picture_local_dimming")
+
+        def operation():
+            with self.adb.transaction():
+                self.adb.jni_set("g_video__vid_local_dimming", value, check=True)
+                self.adb.put("picture_local_dimming", str(value), check=True)
+                self.adb.put("tv_picture_video_local_dimming", str(value), check=True)
+                self.adb.refresh_pq(check=True)
+
+        def success():
+            self.log(message)
+            self.current_vals["picture_local_dimming"] = value
+            self.current_vals["tv_picture_video_local_dimming"] = value
+            self._optimistic_highlight("picture_local_dimming", value)
+
+        def failure():
+            self._local_dimming_toggle_suspended = False
+            if previous is not None:
+                self._optimistic_highlight("picture_local_dimming", previous)
+
+        self._run_adb_action("精密控光", operation, success, failure)
 
     def trigger_adjust_hotkey(self, rule):
         if not getattr(self, "adb_connected", False):
@@ -1345,6 +1444,33 @@ class App(FluentWindow):
         param = rule.get("param")
         cfg = ADJUSTABLE_HOTKEY_PARAMS.get(param)
         if not cfg:
+            return
+
+        setting = cfg["setting"]
+        resolve_settings = [setting]
+        if cfg.get("color_gain"):
+            resolve_settings = ["picture_red_gain", "picture_green_gain", "picture_blue_gain"]
+        missing_settings = [key for key in resolve_settings if key not in self.current_vals]
+        if missing_settings:
+            if param in self._adjust_hotkey_resolving:
+                return
+            self._adjust_hotkey_resolving.add(param)
+            result = {}
+
+            def operation():
+                with self.adb.transaction():
+                    for key in missing_settings:
+                        result[key] = self.query_setting_or_jni(key, check=True)
+
+            def success():
+                self._adjust_hotkey_resolving.discard(param)
+                self.current_vals.update(result)
+                self.trigger_adjust_hotkey(rule)
+
+            def failure():
+                self._adjust_hotkey_resolving.discard(param)
+
+            self._run_adb_action(f"读取{cfg['label']}", operation, success, failure)
             return
 
         direction = rule.get("direction", "increase")
@@ -1410,13 +1536,10 @@ class App(FluentWindow):
         if setting in getattr(self, "current_vals", {}):
             val = self.current_vals.get(setting)
         else:
-            try:
-                val = self.query_setting_or_jni(setting)
-            except Exception:
-                if cfg.get("slider") in self.sliders:
-                    val = self.sliders[cfg["slider"]][0].value()
-                else:
-                    val = cfg.get("default", cfg["min"])
+            if cfg.get("slider") in self.sliders:
+                val = self.sliders[cfg["slider"]][0].value()
+            else:
+                val = cfg.get("default", cfg["min"])
 
         try:
             val = int(val)
@@ -1449,14 +1572,19 @@ class App(FluentWindow):
         self._mark_adb_busy(2.5)
 
         def do():
-            if cfg.get("jni"):
-                self.adb.jni_set(cfg["jni"], value)
-                self.adb.refresh_pq()
-            for k in settings_keys:
-                self.adb.put(k, str(value))
-            self.log(f"{cfg['label']}: {value}")
+            with self.adb.transaction():
+                if cfg.get("jni"):
+                    self.adb.jni_set(cfg["jni"], value, check=True)
+                    self.adb.refresh_pq(check=True)
+                for k in settings_keys:
+                    self.adb.put(k, str(value), check=True)
 
-        async_run(do)
+        self._run_adb_action(
+            cfg["label"],
+            do,
+            lambda: self.log(f"{cfg['label']}: {value}"),
+            lambda: self._force_refresh_page("picturePage"),
+        )
 
     def _ensure_color_gain_values(self):
         for key in ("picture_red_gain", "picture_green_gain", "picture_blue_gain"):
@@ -1467,36 +1595,37 @@ class App(FluentWindow):
             except Exception:
                 self.current_vals[key] = 1024
 
-    def query_setting_or_jni(self, sk):
+    def query_setting_or_jni(self, sk, check=False):
+        def as_int(value, fallback=0):
+            try:
+                return int(value)
+            except Exception:
+                if check:
+                    raise RuntimeError(f"{sk} 返回了无效值：{value}")
+                return fallback
+
         if sk in ("picture_local_dimming", "tv_picture_video_local_dimming"):
-            v = self.adb.jni_get("g_video__vid_local_dimming")
-            try: return int(v)
-            except: return 0
+            v = self.adb.jni_get("g_video__vid_local_dimming", check=check)
+            return as_int(v)
         elif sk in ("tv_picture_advanced_video_color_space", "tv_picture_video_color_space"):
-            v = self.adb.jni_get("g_video__vid_gamut_mapping_mode")
-            try: return int(v)
-            except: return 0
+            v = self.adb.jni_get("g_video__vid_gamut_mapping_mode", check=check)
+            return as_int(v)
         elif sk == "picture_response_time":
-            v = self.adb.jni_get("g_video__vid_od_response_time")
-            try: return int(v)
-            except: return 0
+            v = self.adb.jni_get("g_video__vid_od_response_time", check=check)
+            return as_int(v)
         elif sk == "freesync":
-            src = self.adb.get("tv_input_source_id")
-            try: src_id = int(src)
-            except: src_id = 0
+            src = self.adb.get("tv_input_source_id", check=check)
+            src_id = as_int(src)
             if src_id in (29, 30):
-                fs = self.adb.jni_get("g_video__dp_adaptive_sync")
-                try: return 1 if int(fs) == 1 else 0
-                except: return 0
+                fs = self.adb.jni_get("g_video__dp_adaptive_sync", check=check)
+                return 1 if as_int(fs) == 1 else 0
             else:
-                fs = self.adb.jni_get("g_video__freesync_switch")
-                try: return 1 if int(fs) == 3 else 0
-                except: return 0
+                fs = self.adb.jni_get("g_video__freesync_switch", check=check)
+                return 1 if as_int(fs) == 3 else 0
         else:
             # Standard settings key
-            v = self.adb.get(sk)
-            try: return int(v)
-            except: return v
+            v = self.adb.get(sk, check=check)
+            return as_int(v, fallback=v)
 
     def _hdr_memory_enabled(self):
         return bool(load_settings().get("hdr_sdr_local_dimming_enabled", False))
@@ -1510,9 +1639,7 @@ class App(FluentWindow):
         except Exception:
             state_val = getattr(state, "value", 0)
         enabled = state_val == Qt.CheckState.Checked.value
-        s = load_settings()
-        s["hdr_sdr_local_dimming_enabled"] = enabled
-        save_settings(s)
+        update_settings({"hdr_sdr_local_dimming_enabled": enabled})
         if enabled:
             self._ensure_local_dimming_memory_defaults()
             self._hdr_last_state = None
@@ -1686,6 +1813,7 @@ class App(FluentWindow):
     def _set_local_dimming_for_memory(self, value, message):
         value = max(0, min(3, int(value)))
         self._mark_adb_busy(2.5)
+        previous = self.current_vals.get("picture_local_dimming")
         self.current_vals["picture_local_dimming"] = value
         self.current_vals["tv_picture_video_local_dimming"] = value
         self.values_signal.emit({
@@ -1693,14 +1821,26 @@ class App(FluentWindow):
             "tv_picture_video_local_dimming": value,
         })
 
-        def do():
-            self.adb.jni_set("g_video__vid_local_dimming", value)
-            self.adb.put("picture_local_dimming", str(value))
-            self.adb.put("tv_picture_video_local_dimming", str(value))
-            self.adb.refresh_pq()
+        def operation():
+            with self.adb.transaction():
+                self.adb.jni_set("g_video__vid_local_dimming", value, check=True)
+                self.adb.put("picture_local_dimming", str(value), check=True)
+                self.adb.put("tv_picture_video_local_dimming", str(value), check=True)
+                self.adb.refresh_pq(check=True)
+
+        def success():
             self.log(message)
 
-        async_run(do)
+        def failure():
+            if previous is not None:
+                self.current_vals["picture_local_dimming"] = previous
+                self.current_vals["tv_picture_video_local_dimming"] = previous
+                self.values_signal.emit({
+                    "picture_local_dimming": previous,
+                    "tv_picture_video_local_dimming": previous,
+                })
+
+        self._run_adb_action("HDR/SDR 精密控光", operation, success, failure)
 
     def _read_current_local_dimming_for_memory(self):
         if self._adb_channel_busy():
@@ -1733,9 +1873,7 @@ class App(FluentWindow):
         return result
 
     def _save_local_dimming_memory(self, memory):
-        s = load_settings()
-        s["local_dimming_memory"] = memory
-        save_settings(s)
+        update_settings({"local_dimming_memory": memory})
         self._update_hdr_memory_status_label()
 
     def _ensure_local_dimming_memory_defaults(self):
@@ -1838,14 +1976,17 @@ class App(FluentWindow):
                 self._hdr_picture_refresh_timer.stop()
         except Exception:
             pass
-        if not session_ending:
-            try:
-                if self.adb.ip:
-                    adb_run(["disconnect", f"{self.adb.ip}:5555"], timeout=3)
-            except Exception:
-                pass
-        cleanup_adb_processes(kill_server=not session_ending)
-        block_adb_spawns()
+        if session_ending:
+            cleanup_adb_processes(kill_server=False)
+        else:
+            with _adb_command_lock:
+                try:
+                    if self.adb.ip:
+                        adb_run(["disconnect", f"{self.adb.ip}:5555"], timeout=3)
+                except Exception:
+                    pass
+                block_adb_spawns()
+                cleanup_adb_processes(kill_server=True)
         try:
             if _log_file:
                 _log_file.flush()
@@ -1882,9 +2023,10 @@ class App(FluentWindow):
                 choice = dialog.choice
                 remember = dialog.chk_remember.isChecked()
                 
-                settings["close_behavior"] = choice
-                settings["never_ask_close"] = remember
-                save_settings(settings)
+                update_settings({
+                    "close_behavior": choice,
+                    "never_ask_close": remember,
+                })
                 
                 if choice == "tray":
                     event.ignore()
@@ -1926,9 +2068,7 @@ class App(FluentWindow):
 
     def _toggle_autostart(self, state):
         enabled = (state == 2)
-        s = load_settings()
-        s["autostart"] = enabled
-        save_settings(s)
+        update_settings({"autostart": enabled})
         if enabled:
             self._install_autostart()
             self.log("已设置开机自启动")
@@ -1980,35 +2120,54 @@ class App(FluentWindow):
                 self.chk_4k.setChecked(False)
                 self.chk_4k.blockSignals(False)
                 return
-            self.adb.shell("wm size 3840x2160")
-            self.adb.shell("wm density 640")
-            self.log("已设置 4K UI (3840×2160 / DPI 640)")
-            self.log("正在重启显示器...")
-            self.adb.shell("reboot")
-        else:
-            self.adb.shell("wm size 1920x1080")
-            self.adb.shell("wm density 320")
-            self.log("已恢复 1080p UI (1920×1080 / DPI 320)")
+
+        def operation():
+            with self.adb.transaction():
+                if enable:
+                    self.adb.shell("wm size 3840x2160", check=True)
+                    self.adb.shell("wm density 640", check=True)
+                    self.adb.shell("reboot", check=True)
+                else:
+                    self.adb.shell("wm size 1920x1080", check=True)
+                    self.adb.shell("wm density 320", check=True)
+
+        def success():
+            if enable:
+                self.log("已设置 4K UI (3840×2160 / DPI 640)")
+                self.log("正在重启显示器...")
+            else:
+                self.log("已恢复 1080p UI (1920×1080 / DPI 320)")
+
+        def failure():
+            self.chk_4k.blockSignals(True)
+            self.chk_4k.setChecked(not enable)
+            self.chk_4k.blockSignals(False)
+
+        self._run_adb_action("4K UI", operation, success, failure)
 
     def _check_4k_state(self):
         """检测 Override size，存在且大于1080p则为4K模式"""
         if not getattr(self, "adb_connected", False):
             return
-        try:
-            res = self.adb.shell("wm size")
-            is_4k = False
+        result = {"is_4k": False}
+
+        def operation():
+            res = self.adb.shell("wm size", check=True)
             for line in res.split("\n"):
-                if "Override size" in line:
-                    parts = line.split(":")[-1].strip().split("x")
-                    if len(parts) == 2:
-                        w, h = int(parts[0]), int(parts[1])
-                        is_4k = (w > 1920 or h > 1080)
-                    break
+                if "Override size" not in line:
+                    continue
+                parts = line.split(":")[-1].strip().split("x")
+                if len(parts) == 2:
+                    w, h = int(parts[0]), int(parts[1])
+                    result["is_4k"] = (w > 1920 or h > 1080)
+                break
+
+        def success():
             self.chk_4k.blockSignals(True)
-            self.chk_4k.setChecked(is_4k)
+            self.chk_4k.setChecked(result["is_4k"])
             self.chk_4k.blockSignals(False)
-        except:
-            pass
+
+        self._run_adb_action("检测 4K UI", operation, success)
 
     def _export_log(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -2679,9 +2838,7 @@ class App(FluentWindow):
                 theme_str = "light"
                 setTheme(Theme.LIGHT)
             
-            s = load_settings()
-            s["theme"] = theme_str
-            save_settings(s)
+            update_settings({"theme": theme_str})
             
         self.theme_combo.currentIndexChanged.connect(on_theme_changed)
         
@@ -2694,17 +2851,13 @@ class App(FluentWindow):
         def on_choose_tray():
             self.btn_setting_tray.setChecked(True)
             self.btn_setting_exit.setChecked(False)
-            s = load_settings()
-            s["close_behavior"] = "tray"
-            save_settings(s)
+            update_settings({"close_behavior": "tray"})
             self._update_hdr_memory_status_label()
             
         def on_choose_exit():
             self.btn_setting_tray.setChecked(False)
             self.btn_setting_exit.setChecked(True)
-            s = load_settings()
-            s["close_behavior"] = "exit"
-            save_settings(s)
+            update_settings({"close_behavior": "exit"})
             self._update_hdr_memory_status_label()
             
         self.btn_setting_tray.clicked.connect(on_choose_tray)
@@ -2979,10 +3132,10 @@ class App(FluentWindow):
                     "key": row["key"].currentText(),
                 })
                 
-            s = load_settings()
-            s["hotkeys"] = new_hotkeys
-            s["adjust_hotkeys"] = new_adjust_hotkeys
-            save_settings(s)
+            update_settings({
+                "hotkeys": new_hotkeys,
+                "adjust_hotkeys": new_adjust_hotkeys,
+            })
             
             self.register_global_hotkeys()
             self.log("全局快捷键保存并重新注册成功！")
@@ -3265,14 +3418,19 @@ class App(FluentWindow):
                 return
             v = slider.value()
             self._mark_adb_busy(2.5)
-            def do():
-                if jni_key:
-                    self.adb.jni_set(jni_key, v)
-                    self.adb.refresh_pq()
-                if settings_keys:
-                    for k in settings_keys: self.adb.put(k, str(v))
-                self.log(f"{title}: {v}")
-            async_run(do)
+            def operation():
+                with self.adb.transaction():
+                    if jni_key:
+                        self.adb.jni_set(jni_key, v, check=True)
+                        self.adb.refresh_pq(check=True)
+                    if settings_keys:
+                        for k in settings_keys: self.adb.put(k, str(v), check=True)
+            self._run_adb_action(
+                title,
+                operation,
+                lambda: self.log(f"{title}: {v}"),
+                lambda: self._force_refresh_page("picturePage"),
+            )
 
         _debounce_timer.timeout.connect(on_commit)
         slider.valueChanged.connect(lambda v: _debounce_timer.start())
@@ -3449,12 +3607,24 @@ class App(FluentWindow):
         self._mark_adb_busy(3.0)
         self._picture_mode_switch_seq += 1
         seq = self._picture_mode_switch_seq
-        self.adb.put("picture_mode", str(val))
-        self.current_vals["picture_mode"] = val
-        self._highlight_mode(val)
-        self.log(f"模式: {name}")
-        self._page_loaded.discard("picturePage")
-        QTimer.singleShot(1200, lambda seq=seq, val=val: self._refresh_picture_page_after_mode_switch(seq, val))
+        previous = self._take_control_previous("picture_mode")
+
+        def operation():
+            self.adb.put("picture_mode", str(val), check=True)
+
+        def success():
+            self.current_vals["picture_mode"] = val
+            self._highlight_mode(val)
+            self.log(f"模式: {name}")
+            self._page_loaded.discard("picturePage")
+            QTimer.singleShot(1200, lambda seq=seq, val=val: self._refresh_picture_page_after_mode_switch(seq, val))
+
+        def failure():
+            if previous is not None:
+                self.current_vals["picture_mode"] = previous
+                self._highlight_mode(previous)
+
+        self._run_adb_action("画面模式", operation, success, failure)
 
     def _refresh_picture_page_after_mode_switch(self, seq, expected_mode):
         if seq != getattr(self, "_picture_mode_switch_seq", 0):
@@ -3481,11 +3651,18 @@ class App(FluentWindow):
         w = MessageBox("恢复默认设置", f"你确定要恢复当前模式：{mode_name} 的默认设置吗？", self)
         if w.exec():
             self._mark_adb_busy(4.0)
-            self.adb.jni_set("g_fusion_picture__pic_reset_def_bypicmode", 0)
-            self.adb.refresh_pq()
-            self.log(f"已恢复 {mode_name} 模式默认设置，等待生效...")
-            self._page_loaded.discard("picturePage")
-            QTimer.singleShot(3000, lambda: self._refresh_page_data("picturePage"))
+
+            def operation():
+                with self.adb.transaction():
+                    self.adb.jni_set("g_fusion_picture__pic_reset_def_bypicmode", 0, check=True)
+                    self.adb.refresh_pq(check=True)
+
+            def success():
+                self.log(f"已恢复 {mode_name} 模式默认设置，等待生效...")
+                self._page_loaded.discard("picturePage")
+                QTimer.singleShot(3000, lambda: self._refresh_page_data("picturePage"))
+
+            self._run_adb_action("恢复画面默认设置", operation, success)
 
     def _optimistic_highlight(self, key, val):
         if key in self.state_buttons:
@@ -3502,52 +3679,93 @@ class App(FluentWindow):
     def _set(self, k, v, m):
         if not self.check_connection(): return
         self._mark_adb_busy(2.5)
-        # 信号源切换使用 intent 方式
-        if k == "mitv.tvplayer.hdmi.last.source":
-            self.adb.shell(f"am force-stop com.xiaomi.mitv.tvplayer")
-            self.adb.shell(f"am start -a com.xiaomi.mitv.tvplayer.EXTSRC_PLAY -n com.xiaomi.mitv.tvplayer/.ExternalSourceActivity --ei input {v} -f 0x10000000")
-        else:
-            self.adb.put(k, str(v))
-        self.adb.refresh_pq()
-        self.log(m)
-        self.current_vals[k] = v
-        self._optimistic_highlight(k, v)
-        if k == "mitv.tvplayer.hdmi.last.source":
-            self.source_var_text = self._source_names.get(v, f"未知 ({v})")
-            self.source_label.setText(self.source_var_text)
+        previous = self._take_control_previous(k)
+
+        def operation():
+            with self.adb.transaction():
+                if k == "mitv.tvplayer.hdmi.last.source":
+                    self.adb.shell("am force-stop com.xiaomi.mitv.tvplayer", check=True)
+                    self.adb.shell(f"am start -a com.xiaomi.mitv.tvplayer.EXTSRC_PLAY -n com.xiaomi.mitv.tvplayer/.ExternalSourceActivity --ei input {v} -f 0x10000000", check=True)
+                else:
+                    self.adb.put(k, str(v), check=True)
+                self.adb.refresh_pq(check=True)
+
+        def success():
+            self.log(m)
+            self.current_vals[k] = v
+            self._optimistic_highlight(k, v)
+            if k == "mitv.tvplayer.hdmi.last.source":
+                self.source_var_text = self._source_names.get(v, f"未知 ({v})")
+                self.source_label.setText(self.source_var_text)
+
+        def failure():
+            if previous is not None:
+                self._optimistic_highlight(k, previous)
+
+        self._run_adb_action(m.split(":", 1)[0], operation, success, failure)
 
     def _jni(self, jk, v, sk, m, osd_sk=None):
         if not self.check_connection(): return
         self._mark_adb_busy(2.5)
-        self.adb.jni_set(jk, v)
-        self.adb.put(sk, str(v))
-        if osd_sk:
-            self.adb.put(osd_sk, str(v))
-        self.adb.refresh_pq()
-        self.log(m)
-        self.current_vals[sk] = v
-        if osd_sk:
-            self.current_vals[osd_sk] = v
-        self._optimistic_highlight(sk, v)
-        if sk == "picture_local_dimming":
-            self._local_dimming_toggle_suspended = False
-            self._local_dimming_memory_suppress_until = 0.0
-            self._remember_local_dimming_value(v)
+        previous = self._take_control_previous(sk)
+
+        def operation():
+            with self.adb.transaction():
+                self.adb.jni_set(jk, v, check=True)
+                self.adb.put(sk, str(v), check=True)
+                if osd_sk:
+                    self.adb.put(osd_sk, str(v), check=True)
+                self.adb.refresh_pq(check=True)
+
+        def success():
+            self.log(m)
+            self.current_vals[sk] = v
+            if osd_sk:
+                self.current_vals[osd_sk] = v
+            self._optimistic_highlight(sk, v)
+            if sk == "picture_local_dimming":
+                self._local_dimming_toggle_suspended = False
+                self._local_dimming_memory_suppress_until = 0.0
+                self._remember_local_dimming_value(v)
+
+        def failure():
+            if previous is not None:
+                self.current_vals[sk] = previous
+                self._optimistic_highlight(sk, previous)
+
+        self._run_adb_action(m.split(":", 1)[0], operation, success, failure)
 
     def _set_color_temp(self, jv, sv, m):
         if not self.check_connection(): return
         self._mark_adb_busy(2.5)
-        self.adb.jni_set("g_video__clr_temp", jv)
-        self.adb.put("picture_color_temperature", str(sv))
-        self.adb.refresh_pq()
-        self.log(m)
-        self.current_vals["picture_color_temperature"] = sv
-        self._optimistic_highlight("picture_color_temperature", sv)
+        previous = self._take_control_previous("picture_color_temperature")
+
+        def operation():
+            with self.adb.transaction():
+                self.adb.jni_set("g_video__clr_temp", jv, check=True)
+                self.adb.put("picture_color_temperature", str(sv), check=True)
+                self.adb.refresh_pq(check=True)
+
+        def success():
+            self.log(m)
+            self.current_vals["picture_color_temperature"] = sv
+            self._optimistic_highlight("picture_color_temperature", sv)
+
+        def failure():
+            if previous is not None:
+                self._optimistic_highlight("picture_color_temperature", previous)
+
+        self._run_adb_action("色温", operation, success, failure)
 
     def _set_color_gain(self, title, settings_key, jni_key, value):
         if not self.check_connection():
             return
         self._mark_adb_busy(3.0)
+        previous_temp = self.current_vals.get("picture_color_temperature")
+        previous_values = {
+            key: self.current_vals.get(key, 1024)
+            for key in ("picture_red_gain", "picture_green_gain", "picture_blue_gain")
+        }
         if str(self.current_vals.get("picture_color_temperature")) != str(CUSTOM_COLOR_TEMP_VALUE):
             self.current_vals["picture_color_temperature"] = CUSTOM_COLOR_TEMP_VALUE
             self._optimistic_highlight("picture_color_temperature", CUSTOM_COLOR_TEMP_VALUE)
@@ -3574,58 +3792,107 @@ class App(FluentWindow):
             values[setting] = max(524, min(1524, gain))
         self.current_vals.update(values)
 
-        def do():
-            self.adb.jni_set("g_video__clr_temp", XIAOMI_TO_MTK_COLOR_TEMP[CUSTOM_COLOR_TEMP_VALUE])
-            self.adb.put("picture_color_temperature", str(CUSTOM_COLOR_TEMP_VALUE))
-            self.adb.jni_set_color_gains(
-                values["picture_red_gain"],
-                values["picture_green_gain"],
-                values["picture_blue_gain"],
-            )
-            for setting, _slider_name, _gain_jni_key in gain_controls:
-                self.adb.put(setting, str(values[setting]))
-            self.adb.refresh_pq()
+        def operation():
+            with self.adb.transaction():
+                self.adb.jni_set("g_video__clr_temp", XIAOMI_TO_MTK_COLOR_TEMP[CUSTOM_COLOR_TEMP_VALUE], check=True)
+                self.adb.put("picture_color_temperature", str(CUSTOM_COLOR_TEMP_VALUE), check=True)
+                self.adb.jni_set_color_gains(
+                    values["picture_red_gain"],
+                    values["picture_green_gain"],
+                    values["picture_blue_gain"],
+                    check=True,
+                )
+                for setting, _slider_name, _gain_jni_key in gain_controls:
+                    self.adb.put(setting, str(values[setting]), check=True)
+                self.adb.refresh_pq(check=True)
+
+        def success():
             self.log(f"{title}: {value}")
 
-        async_run(do)
+        def failure():
+            self.current_vals.update(previous_values)
+            if previous_temp is not None:
+                self.current_vals["picture_color_temperature"] = previous_temp
+            restored = dict(previous_values)
+            if previous_temp is not None:
+                restored["picture_color_temperature"] = previous_temp
+            self.values_signal.emit(restored)
+
+        self._run_adb_action(title, operation, success, failure)
 
     def _fs(self, v):
         if not self.check_connection(): return
         self._mark_adb_busy(2.5)
-        self.adb.put("front_sight_index", str(v))
-        if self.adb.get("picture_mode") == "10":
-            self.adb.put("picture_mode", "14")
-            time.sleep(0.5)
-            self.adb.put("picture_mode", "10")
-        self.log(f"准星: {'关' if v==0 else v}")
-        self.current_vals["front_sight_index"] = v
-        self._optimistic_highlight("front_sight_index", v)
+        previous = self._take_control_previous("front_sight_index")
 
-    def _get_input_source(self):
+        def operation():
+            with self.adb.transaction():
+                self.adb.put("front_sight_index", str(v), check=True)
+                if self.adb.get("picture_mode", check=True) == "10":
+                    self.adb.put("picture_mode", "14", check=True)
+                    time.sleep(0.5)
+                    self.adb.put("picture_mode", "10", check=True)
+
+        def success():
+            self.log(f"准星: {'关' if v==0 else v}")
+            self.current_vals["front_sight_index"] = v
+            self._optimistic_highlight("front_sight_index", v)
+
+        def failure():
+            if previous is not None:
+                self._optimistic_highlight("front_sight_index", previous)
+
+        self._run_adb_action("准星", operation, success, failure)
+
+    def _get_input_source(self, check=False):
         """获取当前输入源"""
-        return self.adb.get("mitv.tvplayer.hdmi.last.source")
+        return self.adb.get("mitv.tvplayer.hdmi.last.source", check=check)
 
     def _320(self, on):
         if not self.check_connection(): return
         self._mark_adb_busy(2.5)
-        src = self._get_input_source()
-        if src in ("29","30"): self.adb.jni_set("g_fusion_picture__dp_edid_version", 3 if on else 2)
-        else: self.adb.jni_set("g_fusion_picture__hdmi_edid_version", 6 if on else 1)
-        self.adb.refresh_pq()
-        self.log(f"320Hz: {'开' if on else '关'}")
-        self.current_vals["mode_320"] = 1 if on else 0
-        self._optimistic_highlight("mode_320", 1 if on else 0)
+        previous = self._take_control_previous("mode_320")
+
+        def operation():
+            with self.adb.transaction():
+                src = self._get_input_source(check=True)
+                if src in ("29","30"): self.adb.jni_set("g_fusion_picture__dp_edid_version", 3 if on else 2, check=True)
+                else: self.adb.jni_set("g_fusion_picture__hdmi_edid_version", 6 if on else 1, check=True)
+                self.adb.refresh_pq(check=True)
+
+        def success():
+            self.log(f"320Hz: {'开' if on else '关'}")
+            self.current_vals["mode_320"] = 1 if on else 0
+            self._optimistic_highlight("mode_320", 1 if on else 0)
+
+        def failure():
+            if previous is not None:
+                self._optimistic_highlight("mode_320", previous)
+
+        self._run_adb_action("320Hz", operation, success, failure)
 
     def _fsync(self, on):
         if not self.check_connection(): return
         self._mark_adb_busy(2.5)
-        src = self._get_input_source()
-        if src in ("29","30"): self.adb.jni_set("g_video__dp_adaptive_sync", 1 if on else 0)
-        else: self.adb.jni_set("g_video__freesync_switch", 3 if on else 0)
-        self.adb.refresh_pq()
-        self.log(f"FreeSync: {'开' if on else '关'}")
-        self.current_vals["freesync"] = 1 if on else 0
-        self._optimistic_highlight("freesync", 1 if on else 0)
+        previous = self._take_control_previous("freesync")
+
+        def operation():
+            with self.adb.transaction():
+                src = self._get_input_source(check=True)
+                if src in ("29","30"): self.adb.jni_set("g_video__dp_adaptive_sync", 1 if on else 0, check=True)
+                else: self.adb.jni_set("g_video__freesync_switch", 3 if on else 0, check=True)
+                self.adb.refresh_pq(check=True)
+
+        def success():
+            self.log(f"FreeSync: {'开' if on else '关'}")
+            self.current_vals["freesync"] = 1 if on else 0
+            self._optimistic_highlight("freesync", 1 if on else 0)
+
+        def failure():
+            if previous is not None:
+                self._optimistic_highlight("freesync", previous)
+
+        self._run_adb_action("FreeSync", operation, success, failure)
 
     def _screen_light_int(self, key, default):
         try:
@@ -3637,6 +3904,7 @@ class App(FluentWindow):
         if not self.check_connection():
             return
         self._mark_adb_busy(2.0)
+        previous = {key: self.current_vals.get(key) for key in updates}
         self.current_vals.update(updates)
         for key, val in updates.items():
             self._optimistic_highlight(key, val)
@@ -3646,24 +3914,33 @@ class App(FluentWindow):
         color_temp = self._screen_light_int("atmosphere_light_color_temp", 1)
         color_value = self._screen_light_int("atmosphere_light_color_value", 0)
 
-        def do():
-            self.adb.put("atmosphere_light_switcher_pm2", str(mode))
-            self.adb.put("atmosphere_light_illumination", str(illumination))
-            self.adb.put("atmosphere_light_color_temp", str(color_temp))
-            self.adb.put("atmosphere_light_color_value", str(color_value))
-            if mode == 0:
-                self.adb.colorful_led("lighting", illumination, color_temp)
-            elif mode == 1:
-                self.adb.colorful_led("ambient")
-            elif mode == 2:
-                self.adb.colorful_led("solid", illumination, color_value)
-            elif mode == 3:
-                self.adb.colorful_led("cycle")
-            else:
-                self.adb.colorful_led("off")
+        def operation():
+            with self.adb.transaction():
+                self.adb.put("atmosphere_light_switcher_pm2", str(mode), check=True)
+                self.adb.put("atmosphere_light_illumination", str(illumination), check=True)
+                self.adb.put("atmosphere_light_color_temp", str(color_temp), check=True)
+                self.adb.put("atmosphere_light_color_value", str(color_value), check=True)
+                if mode == 0:
+                    self.adb.colorful_led("lighting", illumination, color_temp, check=True)
+                elif mode == 1:
+                    self.adb.colorful_led("ambient", check=True)
+                elif mode == 2:
+                    self.adb.colorful_led("solid", illumination, color_value, check=True)
+                elif mode == 3:
+                    self.adb.colorful_led("cycle", check=True)
+                else:
+                    self.adb.colorful_led("off", check=True)
+
+        def success():
             self.log(message)
 
-        async_run(do)
+        def failure():
+            restored = {key: val for key, val in previous.items() if val is not None}
+            if restored:
+                self.current_vals.update(restored)
+                self.values_signal.emit(restored)
+
+        self._run_adb_action("屏幕灯", operation, success, failure)
 
     def _set_screen_light_mode(self, val, name):
         self._commit_screen_light(f"屏幕灯模式: {name}", {"atmosphere_light_switcher_pm2": val})
@@ -3687,10 +3964,15 @@ class App(FluentWindow):
     def _key(self, kcode):
         if not self.check_connection(): return
         self._mark_adb_busy(1.0)
-        def do():
-            self.adb.key(kcode)
-            self.log(f"按键: {kcode}")
-        async_run(do)
+
+        def operation():
+            self.adb.key(kcode, check=True)
+
+        self._run_adb_action(
+            "遥控器按键",
+            operation,
+            lambda: self.log(f"按键: {kcode}"),
+        )
 
     def check_connection(self):
         if not getattr(self, "adb_connected", False):
@@ -3698,11 +3980,52 @@ class App(FluentWindow):
             return False
         return True
 
+    def _run_adb_action(self, label, operation, on_success=None, on_failure=None):
+        if getattr(self, "_cleanup_done", False):
+            return
+        context = {
+            "label": label,
+            "on_success": on_success,
+            "on_failure": on_failure,
+        }
+
+        def do():
+            try:
+                operation()
+                self.adb_action_finished.emit(context, True, "")
+            except Exception as e:
+                self.adb_action_finished.emit(context, False, str(e))
+
+        async_run(do)
+
+    def _finish_adb_action(self, context, ok, detail):
+        if getattr(self, "_cleanup_done", False):
+            return
+        callback = context.get("on_success") if ok else context.get("on_failure")
+        if callable(callback):
+            callback()
+        if ok:
+            return
+        label = context.get("label", "ADB 操作")
+        message = f"{label}失败：{detail or '未知错误'}"
+        self.log(message)
+        if getattr(self, "osd", None):
+            self.osd.show_hud(label, "失败")
+        if getattr(self, "tray_icon", None):
+            self.tray_icon.showMessage(
+                "红米 G Pro 27U Toolbox",
+                message,
+                QSystemTrayIcon.MessageIcon.Warning,
+                3000,
+            )
+
     def disconnect_adb(self):
         if self.adb.ip:
             self.log(f"正在断开与 {self.adb.ip} 的连接...")
+            ip = self.adb.ip
+
             def do():
-                adb_run(["disconnect", f"{self.ip_entry.text().strip()}:5555"])
+                adb_run(["disconnect", f"{ip}:5555"])
                 self.adb.ip = ""
                 self.status_signal.emit("未连接")
                 self.log("连接已断开")
@@ -3750,9 +4073,7 @@ class App(FluentWindow):
             if ok:
                 self.status_signal.emit("已连接")
                 self.log(f"连接成功: {self.adb.ip}")
-                settings = load_settings()
-                settings["saved_ip"] = ip
-                save_settings(settings)
+                update_settings({"saved_ip": ip})
                 self.adb.check_and_heal_jar()
                 m = self.adb.get_model()
                 self.status_signal.emit(f"已连接: {m}")
@@ -3833,20 +4154,21 @@ class App(FluentWindow):
         return self.adb.shell(cmd).strip().replace("\r", "")
 
     def _read_guardian_status(self):
-        services = self._guardian_shell("settings get secure enabled_accessibility_services 2>/dev/null")
-        user_state = self._guardian_shell(f'dumpsys package {GUARDIAN_PACKAGE} 2>/dev/null | grep "User 0:" | head -n 1')
-        status = {
-            "installed": bool(self._guardian_shell(f"pm path {GUARDIAN_PACKAGE} 2>/dev/null")),
-            "pid": self._guardian_shell(f"pidof {GUARDIAN_PACKAGE} 2>/dev/null || true"),
-            "mask": self._guardian_shell("getprop persist.appcontrol_w_mask"),
-            "adb_enabled": self._guardian_shell("settings get global adb_enabled"),
-            "adb_wifi_enabled": self._guardian_shell("settings get global adb_wifi_enabled"),
-            "service_port": self._guardian_shell("getprop service.adb.tcp.port"),
-            "persist_port": self._guardian_shell("getprop persist.adb.tcp.port"),
-            "adbd": self._guardian_shell("getprop init.svc.adbd"),
-            "accessibility": GUARDIAN_ACCESSIBILITY in services,
-            "stopped": "stopped=false" in user_state,
-        }
+        with self.adb.transaction():
+            services = self._guardian_shell("settings get secure enabled_accessibility_services 2>/dev/null")
+            user_state = self._guardian_shell(f'dumpsys package {GUARDIAN_PACKAGE} 2>/dev/null | grep "User 0:" | head -n 1')
+            status = {
+                "installed": bool(self._guardian_shell(f"pm path {GUARDIAN_PACKAGE} 2>/dev/null")),
+                "pid": self._guardian_shell(f"pidof {GUARDIAN_PACKAGE} 2>/dev/null || true"),
+                "mask": self._guardian_shell("getprop persist.appcontrol_w_mask"),
+                "adb_enabled": self._guardian_shell("settings get global adb_enabled"),
+                "adb_wifi_enabled": self._guardian_shell("settings get global adb_wifi_enabled"),
+                "service_port": self._guardian_shell("getprop service.adb.tcp.port"),
+                "persist_port": self._guardian_shell("getprop persist.adb.tcp.port"),
+                "adbd": self._guardian_shell("getprop init.svc.adbd"),
+                "accessibility": GUARDIAN_ACCESSIBILITY in services,
+                "stopped": "stopped=false" in user_state,
+            }
         status["ok"] = (
             status["installed"] and status["pid"] and
             status["adb_enabled"] == "1" and status["adb_wifi_enabled"] == "1" and
@@ -3917,19 +4239,21 @@ class App(FluentWindow):
         async_run(do)
 
     def _enable_guardian_accessibility(self):
-        current = self._guardian_shell("settings get secure enabled_accessibility_services 2>/dev/null")
-        if current in ("", "null"):
-            new_services = GUARDIAN_ACCESSIBILITY
-        elif GUARDIAN_ACCESSIBILITY in current.split(":"):
-            new_services = current
-        else:
-            new_services = f"{current}:{GUARDIAN_ACCESSIBILITY}"
-        self.adb.shell(f"settings put secure enabled_accessibility_services '{new_services}'")
-        self.adb.shell("settings put secure accessibility_enabled 1")
+        with self.adb.transaction():
+            current = self._guardian_shell("settings get secure enabled_accessibility_services 2>/dev/null")
+            if current in ("", "null"):
+                new_services = GUARDIAN_ACCESSIBILITY
+            elif GUARDIAN_ACCESSIBILITY in current.split(":"):
+                new_services = current
+            else:
+                new_services = f"{current}:{GUARDIAN_ACCESSIBILITY}"
+            self.adb.shell(f"settings put secure enabled_accessibility_services '{new_services}'")
+            self.adb.shell("settings put secure accessibility_enabled 1")
 
     def _start_guardian_commands(self):
-        self.adb.shell(f"am start -n {GUARDIAN_MAIN_ACTIVITY} >/dev/null")
-        self.adb.shell(f"am broadcast -a {GUARDIAN_PACKAGE}.ACTION_KEEP_ALIVE -p {GUARDIAN_PACKAGE} >/dev/null")
+        with self.adb.transaction():
+            self.adb.shell(f"am start -n {GUARDIAN_MAIN_ACTIVITY} >/dev/null")
+            self.adb.shell(f"am broadcast -a {GUARDIAN_PACKAGE}.ACTION_KEEP_ALIVE -p {GUARDIAN_PACKAGE} >/dev/null")
 
     def _start_guardian(self):
         if not self.check_connection():
@@ -3961,17 +4285,18 @@ class App(FluentWindow):
 
         def do():
             try:
-                serial = f"{self.adb.ip}:5555"
-                r = adb_run(["-s", serial, "install", "-r", "-d", apk_path], timeout=90)
-                if "Success" not in r:
-                    raise RuntimeError(r or "adb install 没有返回成功")
-                self.adb.shell(f"pm grant {GUARDIAN_PACKAGE} android.permission.WRITE_SECURE_SETTINGS 2>/dev/null || true")
-                self.adb.shell(f"cmd deviceidle whitelist +{GUARDIAN_PACKAGE} 2>/dev/null || true")
-                self._enable_guardian_accessibility()
-                self._start_guardian_commands()
-                time.sleep(3)
-                adb_run(["connect", serial], timeout=5)
-                status = self._read_guardian_status()
+                with self.adb.transaction():
+                    serial = f"{self.adb.ip}:5555"
+                    r = adb_run(["-s", serial, "install", "-r", "-d", apk_path], timeout=90)
+                    if "Success" not in r:
+                        raise RuntimeError(r or "adb install 没有返回成功")
+                    self.adb.shell(f"pm grant {GUARDIAN_PACKAGE} android.permission.WRITE_SECURE_SETTINGS 2>/dev/null || true")
+                    self.adb.shell(f"cmd deviceidle whitelist +{GUARDIAN_PACKAGE} 2>/dev/null || true")
+                    self._enable_guardian_accessibility()
+                    self._start_guardian_commands()
+                    time.sleep(3)
+                    adb_run(["connect", serial], timeout=5)
+                    status = self._read_guardian_status()
                 self.guardian_status_signal.emit(status)
                 if status.get("ok"):
                     self.message_signal.emit("info", "部署完成", "ADB 保活守护已部署并正常运行。")
@@ -4138,77 +4463,79 @@ class App(FluentWindow):
         self.log(f"正在刷新 {page_name} 数据...")
 
         def do():
+            loaded = False
             try:
                 cfg = self._page_data_keys[page_name]
                 settings_vals = {}
                 jni_vals = {}
 
-                # 读取 settings
-                settings_keys = cfg.get("settings", [])
-                if settings_keys:
-                    keys_str = " ".join(settings_keys)
-                    cmd = f"for k in {keys_str}; do echo $k=$(settings get global $k); done"
-                    res = self.adb.shell(cmd)
-                    for line in res.split("\n"):
-                        if "=" in line:
-                            parts = line.strip().split("=", 1)
-                            if len(parts) == 2:
-                                k, v = parts[0], parts[1]
-                                if v not in ("", "null", "N/A"):
-                                    try: settings_vals[k] = int(v)
-                                    except: settings_vals[k] = v
+                # 页面中的多项读取必须来自同一设备快照，避免写操作穿插后混合新旧值。
+                with self.adb.transaction():
+                    settings_keys = cfg.get("settings", [])
+                    if settings_keys:
+                        keys_str = " ".join(settings_keys)
+                        cmd = f"for k in {keys_str}; do echo $k=$(settings get global $k); done"
+                        res = self.adb.shell(cmd)
+                        for line in res.split("\n"):
+                            if "=" in line:
+                                parts = line.strip().split("=", 1)
+                                if len(parts) == 2:
+                                    k, v = parts[0], parts[1]
+                                    if v not in ("", "null", "N/A"):
+                                        try: settings_vals[k] = int(v)
+                                        except: settings_vals[k] = v
 
-                # 读取 JNI 背光
-                if "g_disp__disp_back_light" in cfg.get("jni", []):
-                    bl = self.adb.jni_get("g_disp__disp_back_light")
-                    try: jni_vals["g_disp__disp_back_light"] = int(bl)
-                    except: pass
-
-                # 读取 JNI 色域 (覆盖 settings 中的主键和旧 OSD 键)
-                if "g_video__vid_gamut_mapping_mode" in cfg.get("jni", []):
-                    gamut = self.adb.jni_get("g_video__vid_gamut_mapping_mode")
-                    try:
-                        gamut_val = int(gamut)
-                        # MTK 值和 settings 值一致，直接覆盖
-                        settings_vals["tv_picture_advanced_video_color_space"] = gamut_val
-                        settings_vals["tv_picture_video_color_space"] = gamut_val
-                    except: pass
-
-                # 读取 JNI 色温 (MTK 值需转换为小米 settings 枚举值)
-                if "g_video__clr_temp" in cfg.get("jni", []):
-                    clr = self.adb.jni_get("g_video__clr_temp")
-                    try:
-                        clr_val = int(clr)
-                        if clr_val in MTK_TO_XIAOMI_COLOR_TEMP:
-                            settings_vals["picture_color_temperature"] = MTK_TO_XIAOMI_COLOR_TEMP[clr_val]
-                    except: pass
-
-                # 读取 JNI 控光 (覆盖官方主键和旧 OSD 键)
-                if "g_video__vid_local_dimming" in cfg.get("jni", []):
-                    dim = self.adb.jni_get("g_video__vid_local_dimming")
-                    try:
-                        dim_val = int(dim)
-                        settings_vals["picture_local_dimming"] = dim_val
-                        settings_vals["tv_picture_video_local_dimming"] = dim_val
-                    except: pass
-
-                # 读取 JNI 模式 (game page)
-                if cfg.get("jni_mode"):
-                    src = settings_vals.get("mitv.tvplayer.hdmi.last.source")
-                    if src in (29, 30):
-                        edid = self.adb.jni_get("g_fusion_picture__dp_edid_version")
-                        try: jni_vals["mode_320"] = 1 if int(edid) == 3 else 0
+                    # 读取 JNI 背光
+                    if "g_disp__disp_back_light" in cfg.get("jni", []):
+                        bl = self.adb.jni_get("g_disp__disp_back_light")
+                        try: jni_vals["g_disp__disp_back_light"] = int(bl)
                         except: pass
-                        fs = self.adb.jni_get("g_video__dp_adaptive_sync")
-                        try: jni_vals["freesync"] = 1 if int(fs) == 1 else 0
+
+                    # 读取 JNI 色域 (覆盖 settings 中的主键和旧 OSD 键)
+                    if "g_video__vid_gamut_mapping_mode" in cfg.get("jni", []):
+                        gamut = self.adb.jni_get("g_video__vid_gamut_mapping_mode")
+                        try:
+                            gamut_val = int(gamut)
+                            # MTK 值和 settings 值一致，直接覆盖
+                            settings_vals["tv_picture_advanced_video_color_space"] = gamut_val
+                            settings_vals["tv_picture_video_color_space"] = gamut_val
                         except: pass
-                    else:
-                        edid = self.adb.jni_get("g_fusion_picture__hdmi_edid_version")
-                        try: jni_vals["mode_320"] = 1 if int(edid) == 6 else 0
+
+                    # 读取 JNI 色温 (MTK 值需转换为小米 settings 枚举值)
+                    if "g_video__clr_temp" in cfg.get("jni", []):
+                        clr = self.adb.jni_get("g_video__clr_temp")
+                        try:
+                            clr_val = int(clr)
+                            if clr_val in MTK_TO_XIAOMI_COLOR_TEMP:
+                                settings_vals["picture_color_temperature"] = MTK_TO_XIAOMI_COLOR_TEMP[clr_val]
                         except: pass
-                        fs = self.adb.jni_get("g_video__freesync_switch")
-                        try: jni_vals["freesync"] = 1 if int(fs) == 3 else 0
+
+                    # 读取 JNI 控光 (覆盖官方主键和旧 OSD 键)
+                    if "g_video__vid_local_dimming" in cfg.get("jni", []):
+                        dim = self.adb.jni_get("g_video__vid_local_dimming")
+                        try:
+                            dim_val = int(dim)
+                            settings_vals["picture_local_dimming"] = dim_val
+                            settings_vals["tv_picture_video_local_dimming"] = dim_val
                         except: pass
+
+                    # 读取 JNI 模式 (game page)
+                    if cfg.get("jni_mode"):
+                        src = settings_vals.get("mitv.tvplayer.hdmi.last.source")
+                        if src in (29, 30):
+                            edid = self.adb.jni_get("g_fusion_picture__dp_edid_version")
+                            try: jni_vals["mode_320"] = 1 if int(edid) == 3 else 0
+                            except: pass
+                            fs = self.adb.jni_get("g_video__dp_adaptive_sync")
+                            try: jni_vals["freesync"] = 1 if int(fs) == 1 else 0
+                            except: pass
+                        else:
+                            edid = self.adb.jni_get("g_fusion_picture__hdmi_edid_version")
+                            try: jni_vals["mode_320"] = 1 if int(edid) == 6 else 0
+                            except: pass
+                            fs = self.adb.jni_get("g_video__freesync_switch")
+                            try: jni_vals["freesync"] = 1 if int(fs) == 3 else 0
+                            except: pass
 
                 if page_name == "picturePage" and refresh_seq != getattr(self, "_picture_mode_switch_seq", 0):
                     self.log("已丢弃过期的画面设置刷新结果")
@@ -4220,15 +4547,20 @@ class App(FluentWindow):
                 if jni_vals:
                     self.jni_values_signal.emit(jni_vals)
 
-                self._page_loaded.add(page_name)
-                self.log(f"页面数据刷新完成")
+                loaded = True
+                self.log("页面数据刷新完成")
             except Exception as e:
                 print(f"Page data refresh error: {e}")
             finally:
-                self._page_loading.discard(page_name)
-                self._hide_loading_overlay(page_name)
+                self.page_refresh_finished.emit(page_name, loaded)
 
         async_run(do)
+
+    def _finish_page_refresh(self, page_name, loaded):
+        if loaded:
+            self._page_loaded.add(page_name)
+        self._page_loading.discard(page_name)
+        self._hide_loading_overlay(page_name)
 
     def _show_loading_overlay(self, page_name):
         pages = {

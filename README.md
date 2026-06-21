@@ -114,26 +114,18 @@ tools/
 ## 打包
 
 ```bash
-# 安装依赖
-pip install pyinstaller pyqt6 qfluentwidgets
+# 安装锁定的构建依赖
+python -m pip install -r requirements-build.txt
 
-# 打包（或直接运行 build.bat）
-pyinstaller --onefile --windowed --name "MonitorToolbox" --icon=assets/app/icon.ico \
-  --hidden-import qfluentwidgets \
-  --add-binary "assets/runtime/adb.exe;assets/runtime" \
-  --add-binary "assets/runtime/AdbWinApi.dll;assets/runtime" \
-  --add-binary "assets/runtime/AdbWinUsbApi.dll;assets/runtime" \
-  --add-binary "assets/runtime/MtkDirectTool.jar;assets/runtime" \
-  --add-binary "assets/runtime/ColorfulLedTool.jar;assets/runtime" \
-  --add-binary "assets/adb_guardian/adbguardian-signed.apk;assets/adb_guardian" \
-  monitor_controller.py
+# 使用与 build.bat、GitHub Actions 相同的资源清单打包
+python -m PyInstaller --clean --noconfirm MonitorToolbox.spec
 ```
 
 ## 依赖
 
 - Python 3.10+
-- PyQt6
-- qfluentwidgets
+- PyQt6（版本见 `requirements-build.txt`）
+- PyQt-Fluent-Widgets（版本见 `requirements-build.txt`）
 - ADB（打包进 exe，无需额外安装）
 
 ## 感谢认可！🙌

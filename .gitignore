@@ -3,6 +3,7 @@ __pycache__/
 dist/
 build/
 *.spec
+!MonitorToolbox.spec
 logs/
 *.Zone.Identifier
 ok.py
