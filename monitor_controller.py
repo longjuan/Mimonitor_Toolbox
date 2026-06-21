@@ -11,6 +11,8 @@ import ctypes
 # Native Windows Hotkey support variables
 user32 = None
 WM_HOTKEY = 0x0312
+WM_QUERYENDSESSION = 0x0011
+WM_ENDSESSION = 0x0016
 WM_DISPLAYCHANGE = 0x007E
 WM_SETTINGCHANGE = 0x001A
 MOD_ALT = 0x0001
@@ -416,6 +418,7 @@ _log_file = None
 _log_path = None
 _log_to_file_enabled = False
 _adb_processes = set()
+_adb_spawn_blocked = False
 
 def adb_command(args):
     cmd = [ADB]
@@ -438,6 +441,9 @@ def _adb_log(msg):
         except: pass
 
 def adb_run(args, timeout=10):
+    if _adb_spawn_blocked:
+        _adb_log(f"{adb_command_text(args)} => SKIPPED: shutting down")
+        return ""
     proc = None
     try:
         cmd = adb_command(args)
@@ -480,6 +486,14 @@ def cleanup_adb_processes(kill_server=False):
                            creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
         except Exception:
             pass
+
+def block_adb_spawns():
+    global _adb_spawn_blocked
+    _adb_spawn_blocked = True
+
+def unblock_adb_spawns():
+    global _adb_spawn_blocked
+    _adb_spawn_blocked = False
 
 
 class Adb:
@@ -918,6 +932,7 @@ class App(FluentWindow):
         self.page_status_indicators = []
         self.adb_connected = False
         self._cleanup_done = False
+        self._windows_session_ending = False
 
         # Window properties
         self.setWindowTitle("红米 G Pro 27U Toolbox")
@@ -1122,6 +1137,18 @@ class App(FluentWindow):
     def nativeEvent(self, eventType, message):
         if sys.platform == "win32" and eventType == b"windows_generic_MSG" and user32:
             msg = ctypes.wintypes.MSG.from_address(int(message))
+            if msg.message == WM_QUERYENDSESSION:
+                self._windows_session_ending = True
+                block_adb_spawns()
+                return True, 1
+            if msg.message == WM_ENDSESSION:
+                if msg.wParam:
+                    self._windows_session_ending = True
+                    self.cleanup_before_exit()
+                else:
+                    self._windows_session_ending = False
+                    unblock_adb_spawns()
+                return True, 0
             if msg.message == WM_HOTKEY:
                 hotkey_id = msg.wParam
                 if hotkey_id in getattr(self, "hotkey_registry", {}):
@@ -1773,7 +1800,7 @@ class App(FluentWindow):
                 del self.pending_notifications[key]
 
     def _keep_adb_alive(self):
-        if getattr(self, "_cleanup_done", False):
+        if getattr(self, "_cleanup_done", False) or getattr(self, "_windows_session_ending", False):
             return
         if not getattr(self, "adb_connected", False) or not self.adb.ip:
             return
@@ -1790,6 +1817,9 @@ class App(FluentWindow):
         if getattr(self, "_cleanup_done", False):
             return
         self._cleanup_done = True
+        session_ending = getattr(self, "_windows_session_ending", False)
+        if session_ending:
+            block_adb_spawns()
         try:
             self.unregister_all_hotkeys()
         except Exception:
@@ -1804,14 +1834,18 @@ class App(FluentWindow):
                 self.hdr_memory_timer.stop()
             if hasattr(self, "_hdr_memory_apply_timer"):
                 self._hdr_memory_apply_timer.stop()
+            if hasattr(self, "_hdr_picture_refresh_timer"):
+                self._hdr_picture_refresh_timer.stop()
         except Exception:
             pass
-        try:
-            if self.adb.ip:
-                adb_run(["disconnect", f"{self.adb.ip}:5555"], timeout=3)
-        except Exception:
-            pass
-        cleanup_adb_processes(kill_server=True)
+        if not session_ending:
+            try:
+                if self.adb.ip:
+                    adb_run(["disconnect", f"{self.adb.ip}:5555"], timeout=3)
+            except Exception:
+                pass
+        cleanup_adb_processes(kill_server=not session_ending)
+        block_adb_spawns()
         try:
             if _log_file:
                 _log_file.flush()
