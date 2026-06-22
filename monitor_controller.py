@@ -343,6 +343,23 @@ HOTKEY_MODIFIERS = ["无", "Ctrl + Alt", "Ctrl + Shift", "Alt + Shift", "Win + S
 HOTKEY_KEYS = ["无"] + [f"F{i}" for i in range(1, 13)] + [str(i) for i in range(0, 10)] + list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ["+", "-", "PageUp", "PageDown", "↑", "↓", "←", "→"]
 HOTKEY_EXTRA_VK = {"+": 0xBB, "-": 0xBD, "PageUp": 0x21, "PageDown": 0x22, "↑": 0x26, "↓": 0x28, "←": 0x25, "→": 0x27}
 LOCAL_DIMMING_NAMES = {0: "关", 1: "低", 2: "中", 3: "高"}
+
+
+def is_adb_server_alive(timeout=0.2):
+    """检查本软件独立 ADB Server 的监听端口，不触发 ADB 自动拉起。"""
+    sock = None
+    try:
+        port = int(ADB_SERVER_PORT)
+        sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
 ADJUSTABLE_HOTKEY_PARAMS = {
     "backlight": {
         "label": "背光", "setting": "picture_backlight", "settings": ["picture_backlight", "xiaomi_picture_backlight"],
@@ -941,6 +958,7 @@ class App(FluentWindow):
     auto_scan_signal = pyqtSignal()
     page_refresh_finished = pyqtSignal(str, bool)
     adb_action_finished = pyqtSignal(object, bool, str)
+    adb_server_event = pyqtSignal(str, str)
 
     def __init__(self):
         super().__init__()
@@ -1006,6 +1024,7 @@ class App(FluentWindow):
         self.auto_scan_signal.connect(lambda: self.scan_net(auto=True))
         self.page_refresh_finished.connect(self._finish_page_refresh)
         self.adb_action_finished.connect(self._finish_adb_action)
+        self.adb_server_event.connect(self._on_adb_server_event)
 
         # Setup layout and components
         self.osd = OsdHud(self)
@@ -1023,6 +1042,10 @@ class App(FluentWindow):
         self._adjust_hotkey_resolving = set()
         self._local_dimming_toggle_resolving = False
         self._adb_busy_until = 0.0
+        self._adb_server_monitor_checking = False
+        self._adb_server_down_notified = False
+        self._adb_server_failure_notified = False
+        self._adb_server_retry_after = 0.0
         self._hdr_last_state = None
         self._hdr_state_source = None
         self._hdr_windows_state = None
@@ -1040,6 +1063,10 @@ class App(FluentWindow):
         self.adb_keepalive_timer.setInterval(15000)
         self.adb_keepalive_timer.timeout.connect(self._keep_adb_alive)
         self.adb_keepalive_timer.start()
+        self.adb_server_monitor_timer = QTimer(self)
+        self.adb_server_monitor_timer.setInterval(1000)
+        self.adb_server_monitor_timer.timeout.connect(self._monitor_adb_server)
+        self.adb_server_monitor_timer.start()
         self.hdr_memory_timer = QTimer(self)
         self.hdr_memory_timer.setInterval(3000)
         self.hdr_memory_timer.timeout.connect(lambda: self._poll_hdr_memory_state("timer"))
@@ -1937,6 +1964,90 @@ class App(FluentWindow):
                     )
                 del self.pending_notifications[key]
 
+    def _monitor_adb_server(self):
+        if getattr(self, "_cleanup_done", False) or getattr(self, "_windows_session_ending", False):
+            return
+        if not getattr(self, "adb_connected", False) or not self.adb.ip:
+            return
+        if self._adb_server_monitor_checking or time.monotonic() < self._adb_server_retry_after:
+            return
+
+        self._adb_server_monitor_checking = True
+        ip = self.adb.ip
+
+        def do():
+            if is_adb_server_alive():
+                self.adb_server_event.emit("healthy", "")
+                return
+
+            self.adb_server_event.emit("restarting", "")
+            try:
+                adb_run(["start-server"], timeout=5, check=True)
+                if not is_adb_server_alive(timeout=0.5):
+                    raise RuntimeError("ADB Server 启动后未监听端口")
+
+                reconnect_result = adb_run(["connect", f"{ip}:5555"], timeout=5)
+                self.adb_server_event.emit("recovered", reconnect_result)
+            except Exception as e:
+                self.adb_server_event.emit("failed", str(e))
+
+        async_run(do)
+
+    def _on_adb_server_event(self, event, detail):
+        if getattr(self, "_cleanup_done", False):
+            return
+
+        if event == "healthy":
+            self._adb_server_monitor_checking = False
+            self._adb_server_down_notified = False
+            self._adb_server_failure_notified = False
+            self._adb_server_retry_after = 0.0
+            return
+
+        if event == "restarting":
+            if not self._adb_server_down_notified:
+                self._adb_server_down_notified = True
+                message = "检测到 ADB 进程被杀死，正在重启"
+                self.log(message)
+                if getattr(self, "osd", None):
+                    self.osd.show_hud("ADB 进程", "正在重启")
+                if getattr(self, "tray_icon", None):
+                    self.tray_icon.showMessage(
+                        "ADB 进程监控",
+                        message,
+                        QSystemTrayIcon.MessageIcon.Warning,
+                        3500,
+                    )
+            return
+
+        self._adb_server_monitor_checking = False
+        if event == "recovered":
+            self._adb_server_retry_after = 0.0
+            self._adb_server_failure_notified = False
+            self._adb_server_down_notified = False
+            self.log("ADB 进程已重新启动，并已尝试恢复显示器连接")
+            if getattr(self, "tray_icon", None):
+                self.tray_icon.showMessage(
+                    "ADB 进程监控",
+                    "ADB 进程已重新启动",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    2500,
+                )
+            return
+
+        if event == "failed":
+            self._adb_server_retry_after = time.monotonic() + 3.0
+            self.log(f"ADB 进程重启失败，将继续重试: {detail}")
+            if not self._adb_server_failure_notified:
+                self._adb_server_failure_notified = True
+                if getattr(self, "tray_icon", None):
+                    self.tray_icon.showMessage(
+                        "ADB 进程监控",
+                        "ADB 进程重启失败，正在持续重试",
+                        QSystemTrayIcon.MessageIcon.Critical,
+                        4000,
+                    )
+
     def _keep_adb_alive(self):
         if getattr(self, "_cleanup_done", False) or getattr(self, "_windows_session_ending", False):
             return
@@ -1965,6 +2076,8 @@ class App(FluentWindow):
         try:
             if hasattr(self, "adb_keepalive_timer"):
                 self.adb_keepalive_timer.stop()
+            if hasattr(self, "adb_server_monitor_timer"):
+                self.adb_server_monitor_timer.stop()
         except Exception:
             pass
         try:

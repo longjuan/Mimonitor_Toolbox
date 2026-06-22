@@ -90,6 +90,84 @@ class AdbRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "device offline"):
                 app.adb_run(["version"], check=True)
 
+    def test_adb_server_probe_does_not_start_adb(self):
+        fake_socket = mock.Mock()
+        with mock.patch.object(app.socket, "create_connection", return_value=fake_socket) as connect:
+            self.assertTrue(app.is_adb_server_alive())
+        connect.assert_called_once_with(("127.0.0.1", int(app.ADB_SERVER_PORT)), timeout=0.2)
+        fake_socket.close.assert_called_once_with()
+
+        with mock.patch.object(app.socket, "create_connection", side_effect=ConnectionRefusedError):
+            self.assertFalse(app.is_adb_server_alive())
+
+    def test_dead_adb_server_is_restarted_and_device_reconnected(self):
+        events = []
+        commands = []
+
+        class FakeSignal:
+            def emit(self, *args):
+                events.append(args)
+
+        class FakeApp:
+            _cleanup_done = False
+            _windows_session_ending = False
+            adb_connected = True
+            adb = type("FakeAdb", (), {"ip": "192.168.5.205"})()
+            _adb_server_monitor_checking = False
+            _adb_server_retry_after = 0.0
+            adb_server_event = FakeSignal()
+
+        def fake_adb_run(args, timeout=10, check=False):
+            commands.append((args, timeout, check))
+            return "connected to 192.168.5.205:5555"
+
+        fake = FakeApp()
+        with mock.patch.object(app, "is_adb_server_alive", side_effect=[False, True]), \
+                mock.patch.object(app, "adb_run", side_effect=fake_adb_run), \
+                mock.patch.object(app, "async_run", side_effect=lambda fn: fn()):
+            app.App._monitor_adb_server(fake)
+
+        self.assertTrue(fake._adb_server_monitor_checking)
+        self.assertEqual(events, [
+            ("restarting", ""),
+            ("recovered", "connected to 192.168.5.205:5555"),
+        ])
+        self.assertEqual(commands[0], (["start-server"], 5, True))
+        self.assertEqual(commands[1], (["connect", "192.168.5.205:5555"], 5, False))
+
+    def test_adb_restart_notification_is_not_repeated(self):
+        messages = []
+        hud = []
+        logs = []
+
+        class FakeTray:
+            def showMessage(self, *args):
+                messages.append(args)
+
+        class FakeOsd:
+            def show_hud(self, *args):
+                hud.append(args)
+
+        class FakeApp:
+            _cleanup_done = False
+            _adb_server_monitor_checking = True
+            _adb_server_down_notified = False
+            _adb_server_failure_notified = False
+            _adb_server_retry_after = 0.0
+            tray_icon = FakeTray()
+            osd = FakeOsd()
+
+            def log(self, message):
+                logs.append(message)
+
+        fake = FakeApp()
+        app.App._on_adb_server_event(fake, "restarting", "")
+        app.App._on_adb_server_event(fake, "restarting", "")
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(hud, [("ADB 进程", "正在重启")])
+        self.assertEqual(logs, ["检测到 ADB 进程被杀死，正在重启"])
+
 
 class SettingsTests(unittest.TestCase):
     def test_concurrent_updates_are_atomic(self):
