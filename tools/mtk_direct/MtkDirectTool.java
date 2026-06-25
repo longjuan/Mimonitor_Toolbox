@@ -52,9 +52,29 @@ public class MtkDirectTool {
         writeResult(String.valueOf(ret));
     }
 
+    private static void setHdrToneMapping(ClassLoader classLoader, Method setConfigValueNative, int value,
+            int isUpdate) throws Exception {
+        int configRet = (Integer) setConfigValueNative.invoke(
+                null, -1, "g_video__vid_hdr_tone_mapping_mode", value, isUpdate);
+        Integer hdrAttrRet = null;
+        try {
+            Class<?> providerClass = classLoader.loadClass("xiaomi.hardware.mitv.provider.V1_0.IMiTVProvider");
+            Object provider = providerClass.getMethod("getService", boolean.class).invoke(null, false);
+            if (provider != null) {
+                hdrAttrRet = (Integer) providerClass.getMethod("setHdrAttr", int.class, int.class)
+                        .invoke(provider, 4, value);
+            }
+        } catch (Exception e) {
+            log("WARN: setHdrAttr failed: " + e.getMessage());
+        }
+        log("RESULT: SET_HDR_TONE_MAPPING value=" + value + ", configReturn: " + configRet
+                + ", hdrAttrReturn: " + (hdrAttrRet == null ? "N/A" : hdrAttrRet));
+        writeResult(String.valueOf(configRet));
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
-            log("Usage: MtkDirectTool <get/set/getMinMax/setColorGains/dump> [args]");
+            log("Usage: MtkDirectTool <get/set/getMinMax/setColorGains/setHdrToneMapping/dump> [args]");
             return;
         }
 
@@ -97,6 +117,16 @@ public class MtkDirectTool {
                 int val = (Integer) getConfigValueNative.invoke(null, -1, key);
                 log("RESULT: GET " + key + " = " + val);
                 writeResult(String.valueOf(val));
+
+            } else if ("setHdrToneMapping".equals(cmd)) {
+                if (args.length < 2) {
+                    log("ERROR: setHdrToneMapping requires value [isUpdate]");
+                    writeResult("ERROR");
+                    return;
+                }
+                int hdrValue = Integer.parseInt(args[1]);
+                int hdrIsUpdate = args.length >= 3 ? Integer.parseInt(args[2]) : 3;
+                setHdrToneMapping(classLoader, setConfigValueNative, hdrValue, hdrIsUpdate);
 
             } else if ("set".equals(cmd)) {
                 if (key == null) {

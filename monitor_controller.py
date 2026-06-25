@@ -330,6 +330,7 @@ def get_adb_path():
 
 ADB = get_adb_path()
 ADB_SERVER_PORT = os.environ.get("MIMONITOR_ADB_SERVER_PORT", "5038")
+ADB_DISCONNECTED_MARKERS = ("offline", "unauthorized", "no devices", "not found", "cannot", "failed", "error:")
 GUARDIAN_PACKAGE = "com.example.adbguardian"
 GUARDIAN_MAIN_ACTIVITY = f"{GUARDIAN_PACKAGE}/.MainActivity"
 GUARDIAN_ACCESSIBILITY = f"{GUARDIAN_PACKAGE}/{GUARDIAN_PACKAGE}.AdbGuardianAccessibilityService"
@@ -338,6 +339,8 @@ MTK_DIRECT_TOOL_NAME = "MtkDirectTool.jar"
 COLORFUL_LED_TOOL_NAME = "ColorfulLedTool.jar"
 XIAOMI_TO_MTK_COLOR_TEMP = {0: 1, 1: 2, 2: 3, 3: 0, 4: 4, 5: 5, 8: 6}
 MTK_TO_XIAOMI_COLOR_TEMP = {v: k for k, v in XIAOMI_TO_MTK_COLOR_TEMP.items()}
+HDR_TONE_MAPPING_UI_TO_MTK = {0: 5, 1: 0, 2: 2, 3: 1}
+HDR_TONE_MAPPING_MTK_TO_UI = {v: k for k, v in HDR_TONE_MAPPING_UI_TO_MTK.items()}
 CUSTOM_COLOR_TEMP_VALUE = 3
 HOTKEY_MODIFIERS = ["无", "Ctrl + Alt", "Ctrl + Shift", "Alt + Shift", "Win + Shift"]
 HOTKEY_KEYS = ["无"] + [f"F{i}" for i in range(1, 13)] + [str(i) for i in range(0, 10)] + list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ["+", "-", "PageUp", "PageDown", "↑", "↓", "←", "→"]
@@ -360,6 +363,60 @@ def is_adb_server_alive(timeout=0.2):
                 sock.close()
             except OSError:
                 pass
+
+def adb_text_has_disconnected_marker(text):
+    lower = str(text or "").lower()
+    return any(marker in lower for marker in ADB_DISCONNECTED_MARKERS)
+
+def adb_connect_output_ok(text):
+    lower = str(text or "").lower()
+    if adb_text_has_disconnected_marker(lower):
+        return False
+    return "connected to" in lower or "already connected to" in lower
+
+def adb_device_state(serial, timeout=3):
+    out = adb_run(["-s", serial, "get-state"], timeout=timeout).strip()
+    lower = out.lower()
+    if lower in ("device", "offline", "unauthorized"):
+        return lower
+    if "unauthorized" in lower:
+        return "unauthorized"
+    if "offline" in lower:
+        return "offline"
+    if "not found" in lower:
+        return "not found"
+    if "no devices" in lower:
+        return "no devices"
+    if "cannot" in lower or "failed" in lower or "error:" in lower:
+        return lower or "error"
+    return lower or "unknown"
+
+def adb_device_state_label(state):
+    lower = str(state or "").lower()
+    if "offline" in lower:
+        return "设备离线"
+    if "unauthorized" in lower:
+        return "设备未授权"
+    if "not found" in lower or "no devices" in lower:
+        return "未找到设备"
+    if "cannot" in lower or "failed" in lower or "error" in lower:
+        return "连接异常"
+    if lower == "unknown" or not lower:
+        return "状态未知"
+    return str(state)
+
+def disconnected_status_text(detail):
+    return f"未连接（{adb_device_state_label(detail)}）"
+
+def is_connected_status_text(text):
+    text = str(text or "")
+    return (text == "已连接" or text.startswith("已连接:")) and not adb_text_has_disconnected_marker(text)
+
+def normalize_status_text(text):
+    text = str(text or "")
+    if "已连接" in text and adb_text_has_disconnected_marker(text):
+        return disconnected_status_text(text)
+    return text
 ADJUSTABLE_HOTKEY_PARAMS = {
     "backlight": {
         "label": "背光", "setting": "picture_backlight", "settings": ["picture_backlight", "xiaomi_picture_backlight"],
@@ -574,8 +631,14 @@ class Adb:
                 sd_size = int(sd_size_text)
             except Exception:
                 sd_size = 0
-            if sd_size < 1000:
-                local_jar = get_mtk_direct_tool_path()
+            local_jar = get_mtk_direct_tool_path()
+            local_size = 0
+            if local_jar:
+                try:
+                    local_size = os.path.getsize(local_jar)
+                except Exception:
+                    local_size = 0
+            if sd_size < 1000 or (local_size > 0 and sd_size != local_size):
                 if local_jar:
                     adb_run(["-s", f"{self.ip}:5555", "push", local_jar, "/sdcard/MtkDirectTool.jar"])
                 else:
@@ -602,8 +665,13 @@ class Adb:
             self.shell(f'service call TvService 3 s16 "cp /sdcard/ColorfulLedTool.jar {jar}"', check=check)
             return True
     def connect(self):
-        o = adb_run(["connect", f"{self.ip}:5555"])
-        return "connected" in o and "cannot" not in o
+        serial = f"{self.ip}:5555"
+        o = adb_run(["connect", serial])
+        return adb_connect_output_ok(o) and self.device_state(timeout=3) == "device"
+    def device_state(self, timeout=3):
+        if not self.ip:
+            return "unknown"
+        return adb_device_state(f"{self.ip}:5555", timeout=timeout)
     def get(self, k, check=False):
         v = self.shell(f"settings get global {k}", check=check)
         _adb_log(f"settings get {k} => {v}")
@@ -627,6 +695,10 @@ class Adb:
         _adb_log(f"jni_set {key} = {val}")
         jar = "/data/data/mitv.service/cache/MtkDirectTool.jar"
         return self.shell(f'service call TvService 3 s16 "sh -c eval\\${{IFS}}CLASSPATH={jar}\\${{IFS}}/system/bin/app_process\\${{IFS}}/data/data/mitv.service/cache\\${{IFS}}MtkDirectTool\\${{IFS}}set\\${{IFS}}{key}\\${{IFS}}{val}\\${{IFS}}{upd}"', check=check)
+    def hdr_tone_mapping(self, val, upd=3, check=False):
+        _adb_log(f"hdr_tone_mapping = {val}")
+        jar = "/data/data/mitv.service/cache/MtkDirectTool.jar"
+        return self.shell(f'service call TvService 3 s16 "sh -c eval\\${{IFS}}CLASSPATH={jar}\\${{IFS}}/system/bin/app_process\\${{IFS}}/data/data/mitv.service/cache\\${{IFS}}MtkDirectTool\\${{IFS}}setHdrToneMapping\\${{IFS}}{val}\\${{IFS}}{upd}"', check=check)
     def jni_set_color_gains(self, red, green, blue, check=False):
         _adb_log(f"jni_set_color_gains r={red} g={green} b={blue}")
         jar = "/data/data/mitv.service/cache/MtkDirectTool.jar"
@@ -666,8 +738,10 @@ def scan_adb(base="192.168.5", cb=None, log=None):
                 if log: log(f"[扫描] {ip}:5555 开放")
                 o = adb_run(["connect", f"{ip}:5555"], 5)
                 if log: log(f"[扫描] {ip} adb: {o}")
-                if "connected" in o and "cannot" not in o:
+                if adb_connect_output_ok(o) and adb_device_state(f"{ip}:5555", timeout=3) == "device":
                     m = adb_run(["-s", f"{ip}:5555", "shell", "getprop ro.product.model"], 3) or "?"
+                    if adb_text_has_disconnected_marker(m):
+                        return
                     with lock:
                         found.append((ip, m))
                     if cb: cb(ip, m)
@@ -980,9 +1054,11 @@ class App(FluentWindow):
                              "picture_hue", "picture_sharpness", "picture_color_temperature",
                              "picture_red_gain", "picture_green_gain", "picture_blue_gain",
                              "picture_local_dimming", "tv_picture_video_local_dimming",
+                             "picture_hdr_tone_mapping", "settings_display_hdr_color_tone",
                              "picture_dynamic_definition", "picture_response_time",
                              "tv_picture_advanced_video_color_space", "tv_picture_video_color_space"],
-                "jni": ["g_disp__disp_back_light", "g_video__vid_gamut_mapping_mode", "g_video__clr_temp", "g_video__vid_local_dimming"],
+                "jni": ["g_disp__disp_back_light", "g_video__vid_gamut_mapping_mode", "g_video__clr_temp",
+                        "g_video__vid_local_dimming", "g_video__vid_hdr_tone_mapping_mode"],
             },
             "gamePage": {
                 "settings": ["front_sight_index", "mt_game_dynamic_ft", "mt_game_scope",
@@ -1042,6 +1118,7 @@ class App(FluentWindow):
         self._adjust_hotkey_resolving = set()
         self._local_dimming_toggle_resolving = False
         self._adb_busy_until = 0.0
+        self._adb_keepalive_checking = False
         self._adb_server_monitor_checking = False
         self._adb_server_down_notified = False
         self._adb_server_failure_notified = False
@@ -2053,12 +2130,34 @@ class App(FluentWindow):
             return
         if not getattr(self, "adb_connected", False) or not self.adb.ip:
             return
+        if getattr(self, "_adb_keepalive_checking", False):
+            return
+        if time.monotonic() < getattr(self, "_adb_busy_until", 0.0):
+            return
+        self._adb_keepalive_checking = True
         ip = self.adb.ip
 
         def do():
-            state = adb_run(["-s", f"{ip}:5555", "get-state"], timeout=3).strip().lower()
-            if state != "device":
-                adb_run(["connect", f"{ip}:5555"], timeout=5)
+            try:
+                serial = f"{ip}:5555"
+                state = adb_device_state(serial, timeout=3)
+                if state == "device":
+                    return
+
+                self.status_signal.emit(f"连接中...（{adb_device_state_label(state)}，正在重连）")
+                adb_run(["connect", serial], timeout=5)
+                state = adb_device_state(serial, timeout=3)
+                if state != "device":
+                    self.status_signal.emit(disconnected_status_text(state))
+                    return
+
+                m = adb_run(["-s", serial, "shell", "getprop ro.product.model"], timeout=3).strip()
+                if adb_text_has_disconnected_marker(m):
+                    self.status_signal.emit(disconnected_status_text(m))
+                    return
+                self.status_signal.emit(f"已连接: {m or ip}")
+            finally:
+                self._adb_keepalive_checking = False
 
         async_run(do)
 
@@ -2304,9 +2403,10 @@ class App(FluentWindow):
             subprocess.Popen(["xdg-open", log_dir])
 
     def _on_status(self, text):
+        text = normalize_status_text(text)
         self.status_label.setText(text)
         was_connected = getattr(self, "adb_connected", False)
-        self.adb_connected = ("已连接" in text)
+        self.adb_connected = is_connected_status_text(text)
         # 连接状态变化时清除页面缓存
         if was_connected and not self.adb_connected:
             self._page_loaded.clear()
@@ -2334,7 +2434,7 @@ class App(FluentWindow):
             # 扫描完成后自动连接优先匹配到的显示器
             if self.dev_combo.count() > 0 and not self.adb_connected:
                 self._on_dev_sel(self.dev_combo.currentIndex())
-        elif "未连接" in text or "失败" in text:
+        elif "未连接" in text or "失败" in text or adb_text_has_disconnected_marker(text):
             status_suffix = "未连接"
             self.status_label.setStyleSheet("color: #d83b01; font-weight: bold; font-size: 14px;")
         elif "连接中" in text:
@@ -2611,6 +2711,13 @@ class App(FluentWindow):
             ("中", 2, lambda _: self._jni("g_video__vid_local_dimming", 2, "picture_local_dimming", "精密控光: 中", "tv_picture_video_local_dimming")),
             ("高", 3, lambda _: self._jni("g_video__vid_local_dimming", 3, "picture_local_dimming", "精密控光: 高", "tv_picture_video_local_dimming")),
         ], state_key="picture_local_dimming")
+
+        self._btn_section(layout, "HDR 色调映射", [
+            ("HGiG", 0, lambda _: self._set_hdr_tone_mapping(0, "HGiG")),
+            ("层次", 1, lambda _: self._set_hdr_tone_mapping(1, "层次")),
+            ("动态", 2, lambda _: self._set_hdr_tone_mapping(2, "动态")),
+            ("明亮", 3, lambda _: self._set_hdr_tone_mapping(3, "明亮")),
+        ], state_key="settings_display_hdr_color_tone")
 
         self._btn_section(layout, "动态清晰度", [
             ("关", 0, lambda _: self._jni("g_video__vid_insert_black", 0, "picture_dynamic_definition", "动态清晰度: 关")),
@@ -3848,6 +3955,38 @@ class App(FluentWindow):
 
         self._run_adb_action(m.split(":", 1)[0], operation, success, failure)
 
+    def _set_hdr_tone_mapping(self, ui_value, name):
+        if not self.check_connection():
+            return
+        mtk_value = HDR_TONE_MAPPING_UI_TO_MTK.get(ui_value)
+        if mtk_value is None:
+            return
+
+        self._mark_adb_busy(2.5)
+        state_key = "settings_display_hdr_color_tone"
+        previous = self._take_control_previous(state_key)
+
+        def operation():
+            with self.adb.transaction():
+                self.adb.check_and_heal_jar()
+                self.adb.hdr_tone_mapping(mtk_value, check=True)
+                self.adb.put("picture_hdr_tone_mapping", str(mtk_value), check=True)
+                self.adb.put(state_key, str(ui_value), check=True)
+                self.adb.refresh_pq(check=True)
+
+        def success():
+            self.log(f"HDR 色调映射: {name}")
+            self.current_vals["picture_hdr_tone_mapping"] = mtk_value
+            self.current_vals[state_key] = ui_value
+            self._optimistic_highlight(state_key, ui_value)
+
+        def failure():
+            if previous is not None:
+                self.current_vals[state_key] = previous
+                self._optimistic_highlight(state_key, previous)
+
+        self._run_adb_action("HDR 色调映射", operation, success, failure)
+
     def _set_color_temp(self, jv, sv, m):
         if not self.check_connection(): return
         self._mark_adb_busy(2.5)
@@ -4166,8 +4305,12 @@ class App(FluentWindow):
                 self.status_signal.emit("已连接")
                 self.log(f"启动自动连接成功: {self.adb.ip}")
                 self.adb.check_and_heal_jar()
-                m = self.adb.get_model()
-                self.status_signal.emit(f"已连接: {m}")
+                m = self.adb.get_model().strip()
+                if adb_text_has_disconnected_marker(m):
+                    self.status_signal.emit(disconnected_status_text(m))
+                    self.log(f"启动自动连接后设备状态异常: {m}")
+                    return
+                self.status_signal.emit(f"已连接: {m or self.adb.ip}")
             else:
                 self.log(f"启动自动连接失败: {saved_ip}，开始扫描内网")
                 self.status_signal.emit("未连接")
@@ -4188,8 +4331,12 @@ class App(FluentWindow):
                 self.log(f"连接成功: {self.adb.ip}")
                 update_settings({"saved_ip": ip})
                 self.adb.check_and_heal_jar()
-                m = self.adb.get_model()
-                self.status_signal.emit(f"已连接: {m}")
+                m = self.adb.get_model().strip()
+                if adb_text_has_disconnected_marker(m):
+                    self.status_signal.emit(disconnected_status_text(m))
+                    self.log(f"连接后设备状态异常: {m}")
+                    return
+                self.status_signal.emit(f"已连接: {m or self.adb.ip}")
             else:
                 self.status_signal.emit("连接失败")
                 self.message_signal.emit("error", "错误", "连接显示器失败，请检查IP和网络连接！")
@@ -4630,6 +4777,17 @@ class App(FluentWindow):
                             dim_val = int(dim)
                             settings_vals["picture_local_dimming"] = dim_val
                             settings_vals["tv_picture_video_local_dimming"] = dim_val
+                        except: pass
+
+                    # HDR 色调映射的 OSD 索引与 MTK 底层枚举不同。
+                    if "g_video__vid_hdr_tone_mapping_mode" in cfg.get("jni", []):
+                        tone = self.adb.jni_get("g_video__vid_hdr_tone_mapping_mode")
+                        try:
+                            tone_val = int(tone)
+                            ui_val = HDR_TONE_MAPPING_MTK_TO_UI.get(tone_val)
+                            settings_vals["picture_hdr_tone_mapping"] = tone_val
+                            if ui_val is not None:
+                                settings_vals["settings_display_hdr_color_tone"] = ui_val
                         except: pass
 
                     # 读取 JNI 模式 (game page)

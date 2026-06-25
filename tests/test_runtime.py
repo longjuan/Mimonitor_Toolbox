@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import nullcontext
 from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -89,6 +90,64 @@ class AdbRuntimeTests(unittest.TestCase):
         with mock.patch.object(app.subprocess, "Popen", FakePopen):
             with self.assertRaisesRegex(RuntimeError, "device offline"):
                 app.adb_run(["version"], check=True)
+
+    def test_adb_connect_rejects_offline_device_state(self):
+        calls = []
+
+        def fake_adb_run(args, timeout=10, check=False):
+            calls.append(args)
+            if args[0] == "connect":
+                return "already connected to 192.168.5.205:5555"
+            if args[-1] == "get-state":
+                return "offline"
+            return ""
+
+        with mock.patch.object(app, "adb_run", side_effect=fake_adb_run):
+            self.assertFalse(app.Adb("192.168.5.205").connect())
+
+        self.assertEqual(calls, [
+            ["connect", "192.168.5.205:5555"],
+            ["-s", "192.168.5.205:5555", "get-state"],
+        ])
+
+    def test_connected_status_with_adb_error_is_normalized(self):
+        text = "已连接: adb.exe: device offline"
+        self.assertFalse(app.is_connected_status_text(text))
+        self.assertEqual(app.normalize_status_text(text), "未连接（设备离线）")
+
+    def test_keepalive_marks_offline_device_disconnected(self):
+        events = []
+        commands = []
+
+        class FakeSignal:
+            def emit(self, *args):
+                events.append(args)
+
+        class FakeApp:
+            _cleanup_done = False
+            _windows_session_ending = False
+            adb_connected = True
+            adb = type("FakeAdb", (), {"ip": "192.168.5.205"})()
+            _adb_keepalive_checking = False
+            _adb_busy_until = 0.0
+            status_signal = FakeSignal()
+
+        def fake_adb_run(args, timeout=10, check=False):
+            commands.append(args)
+            return "failed to connect"
+
+        fake = FakeApp()
+        with mock.patch.object(app, "adb_device_state", side_effect=["offline", "offline"]), \
+                mock.patch.object(app, "adb_run", side_effect=fake_adb_run), \
+                mock.patch.object(app, "async_run", side_effect=lambda fn: fn()):
+            app.App._keep_adb_alive(fake)
+
+        self.assertFalse(fake._adb_keepalive_checking)
+        self.assertEqual(events, [
+            ("连接中...（设备离线，正在重连）",),
+            ("未连接（设备离线）",),
+        ])
+        self.assertEqual(commands, [["connect", "192.168.5.205:5555"]])
 
     def test_adb_server_probe_does_not_start_adb(self):
         fake_socket = mock.Mock()
@@ -197,6 +256,61 @@ class SettingsTests(unittest.TestCase):
 
 
 class StateMachineTests(unittest.TestCase):
+    def test_hdr_tone_mapping_values_and_setter(self):
+        self.assertEqual(app.HDR_TONE_MAPPING_UI_TO_MTK, {0: 5, 1: 0, 2: 2, 3: 1})
+        calls = []
+
+        class FakeAdb:
+            def transaction(self):
+                return nullcontext()
+
+            def jni_set(self, key, value, check=False):
+                calls.append(("jni", key, value, check))
+
+            def check_and_heal_jar(self):
+                calls.append(("heal_jar",))
+
+            def hdr_tone_mapping(self, value, check=False):
+                calls.append(("hdr_tone", value, check))
+
+            def put(self, key, value, check=False):
+                calls.append(("put", key, value, check))
+
+            def refresh_pq(self, check=False):
+                calls.append(("refresh", check))
+
+        class FakeApp:
+            adb = FakeAdb()
+            current_vals = {}
+
+            def check_connection(self):
+                return True
+
+            def _mark_adb_busy(self, duration):
+                pass
+
+            def _take_control_previous(self, key):
+                return 0
+
+            def _run_adb_action(self, label, operation, success, failure):
+                operation()
+                success()
+
+            def _optimistic_highlight(self, key, value):
+                calls.append(("highlight", key, value))
+
+            def log(self, message):
+                calls.append(("log", message))
+
+        fake = FakeApp()
+        app.App._set_hdr_tone_mapping(fake, 2, "动态")
+
+        self.assertIn(("heal_jar",), calls)
+        self.assertIn(("hdr_tone", 2, True), calls)
+        self.assertIn(("put", "picture_hdr_tone_mapping", "2", True), calls)
+        self.assertIn(("put", "settings_display_hdr_color_tone", "2", True), calls)
+        self.assertEqual(fake.current_vals["settings_display_hdr_color_tone"], 2)
+
     def test_polled_local_dimming_does_not_update_memory(self):
         class FakeApp:
             def _hdr_memory_enabled(self):

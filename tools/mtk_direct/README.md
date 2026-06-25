@@ -7,6 +7,8 @@ It provides:
 
 - generic MTK config `get`, `set`, `getMinMax`, and `dump`
 - `setColorGains <red> <green> <blue>` for custom color temperature gain
+- `setHdrToneMapping <mtkValue> [isUpdate]` for HDR tone mapping; this mirrors
+  Xiaomi's native path by also calling `IMiTVProvider.setHdrAttr(4, value)`
 
 The color gain command uses the factory white-balance API
 `MtkTvFApiDisplay.setWbGainOffsetEx(...)` so red, green, and blue are committed
