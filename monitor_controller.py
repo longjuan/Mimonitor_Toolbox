@@ -417,6 +417,7 @@ def normalize_status_text(text):
     if "已连接" in text and adb_text_has_disconnected_marker(text):
         return disconnected_status_text(text)
     return text
+
 ADJUSTABLE_HOTKEY_PARAMS = {
     "backlight": {
         "label": "背光", "setting": "picture_backlight", "settings": ["picture_backlight", "xiaomi_picture_backlight"],
@@ -506,6 +507,18 @@ PICTURE_SCENE_NAMES = {
     67: "标准预设",
     68: "标准预设",
 }
+HDR_TONE_MAPPING_PICTURE_MODES = {
+    11, 12, 13, 15, 16, 17, 18, 19,
+    22, 23,
+    29, 30, 31, 32, 33,
+    39, 40, 41, 42, 43, 44,
+}
+
+def is_hdr_tone_mapping_picture_mode(mode):
+    try:
+        return int(mode) in HDR_TONE_MAPPING_PICTURE_MODES
+    except Exception:
+        return False
 
 def get_guardian_apk_path():
     return bundled_resource_path("assets", "adb_guardian", GUARDIAN_APK_NAME) or os.path.join(get_app_base_dir(), "assets", "adb_guardian", GUARDIAN_APK_NAME)
@@ -1817,6 +1830,9 @@ class App(FluentWindow):
         self._hdr_last_state = state
         self._hdr_state_source = "Windows"
         self._update_hdr_memory_status_label(source)
+        update_tone_visibility = getattr(self, "_update_hdr_tone_mapping_visibility", None)
+        if callable(update_tone_visibility):
+            update_tone_visibility()
         if changed:
             memory_enabled = self._hdr_memory_enabled()
             if memory_enabled:
@@ -2712,12 +2728,13 @@ class App(FluentWindow):
             ("高", 3, lambda _: self._jni("g_video__vid_local_dimming", 3, "picture_local_dimming", "精密控光: 高", "tv_picture_video_local_dimming")),
         ], state_key="picture_local_dimming")
 
-        self._btn_section(layout, "HDR 色调映射", [
+        self.hdr_tone_mapping_card = self._btn_section(layout, "HDR 色调映射", [
             ("HGiG", 0, lambda _: self._set_hdr_tone_mapping(0, "HGiG")),
             ("层次", 1, lambda _: self._set_hdr_tone_mapping(1, "层次")),
             ("动态", 2, lambda _: self._set_hdr_tone_mapping(2, "动态")),
             ("明亮", 3, lambda _: self._set_hdr_tone_mapping(3, "明亮")),
         ], state_key="settings_display_hdr_color_tone")
+        self._update_hdr_tone_mapping_visibility()
 
         self._btn_section(layout, "动态清晰度", [
             ("关", 0, lambda _: self._jni("g_video__vid_insert_black", 0, "picture_dynamic_definition", "动态清晰度: 关")),
@@ -3752,6 +3769,7 @@ class App(FluentWindow):
                 
         layout.addLayout(btns_layout)
         parent_layout.addWidget(card)
+        return card
 
     # ===== Control Setters =====
     def _highlight_btn(self, btn, is_active):
@@ -3790,12 +3808,32 @@ class App(FluentWindow):
             group = PICTURE_MODE_GROUPS.get(m, {m})
             self._highlight_btn(btn, mode_int in group or str(m) == str(mode))
         self._update_picture_mode_hint(mode_int)
+        self._update_hdr_tone_mapping_visibility(mode_int)
 
     def _picture_mode_group_name(self, mode):
         for primary, name in ((14, "标准"), (10, "游戏"), (9, "电影")):
             if mode in PICTURE_MODE_GROUPS.get(primary, {primary}):
                 return name
         return None
+
+    def _active_picture_scene_mode(self):
+        current_vals = getattr(self, "current_vals", {})
+        for key in ("picture_preset_scenario", "picture_mode"):
+            value = current_vals.get(key)
+            try:
+                return int(value)
+            except Exception:
+                pass
+        return None
+
+    def _update_hdr_tone_mapping_visibility(self, mode=None):
+        card = getattr(self, "hdr_tone_mapping_card", None)
+        if not card:
+            return
+        if mode is None:
+            mode = App._active_picture_scene_mode(self)
+        visible = is_hdr_tone_mapping_picture_mode(mode)
+        card.setVisible(visible)
 
     def _update_picture_mode_hint(self, mode):
         label = getattr(self, "picture_mode_hint_label", None)

@@ -311,6 +311,29 @@ class StateMachineTests(unittest.TestCase):
         self.assertIn(("put", "settings_display_hdr_color_tone", "2", True), calls)
         self.assertEqual(fake.current_vals["settings_display_hdr_color_tone"], 2)
 
+    def test_hdr_tone_mapping_visibility_follows_picture_scene(self):
+        self.assertFalse(app.is_hdr_tone_mapping_picture_mode(14))
+        self.assertTrue(app.is_hdr_tone_mapping_picture_mode(18))
+
+        class FakeCard:
+            visible = None
+
+            def setVisible(self, visible):
+                self.visible = visible
+
+        class FakeApp:
+            def __init__(self, current_vals):
+                self.current_vals = current_vals
+                self.hdr_tone_mapping_card = FakeCard()
+
+        sdr = FakeApp({"picture_mode": 14, "picture_preset_scenario": 14})
+        app.App._update_hdr_tone_mapping_visibility(sdr)
+        self.assertFalse(sdr.hdr_tone_mapping_card.visible)
+
+        hdr = FakeApp({"picture_mode": 14, "picture_preset_scenario": 18})
+        app.App._update_hdr_tone_mapping_visibility(hdr)
+        self.assertTrue(hdr.hdr_tone_mapping_card.visible)
+
     def test_polled_local_dimming_does_not_update_memory(self):
         class FakeApp:
             def _hdr_memory_enabled(self):
