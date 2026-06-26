@@ -23,6 +23,9 @@ export default function Light() {
       setColorTemp(s["atmosphere_light_color_temp"] || "0");
       setColorValue(s["atmosphere_light_color_value"] || "0");
       setLoaded(true);
+    }).catch((e) => {
+      console.error("get_light_settings failed:", e);
+      setLoaded(true);
     });
   }, []);
 
@@ -34,9 +37,9 @@ export default function Light() {
     if (!MODES[v]) return;
     setMode(v);
     // Send full command to ensure device uses current UI values
-    if (v === "0") invoke("set_led_lighting", { brightness: brightness - 1, colorTemp: parseInt(colorTemp) });
-    else if (v === "2") invoke("set_led_solid", { brightness: brightness - 1, color: parseInt(colorValue) });
-    else invoke("set_led_mode", { mode: MODES[v] });
+    if (v === "0") invoke("set_led_lighting", { brightness: brightness - 1, colorTemp: parseInt(colorTemp) }).catch((e) => console.error("set_led_lighting failed:", e));
+    else if (v === "2") invoke("set_led_solid", { brightness: brightness - 1, color: parseInt(colorValue) }).catch((e) => console.error("set_led_solid failed:", e));
+    else invoke("set_led_mode", { mode: MODES[v] }).catch((e) => console.error("set_led_mode failed:", e));
   };
 
   const handleBrightness = (vals: number[]) => {
@@ -44,21 +47,21 @@ export default function Light() {
     setBrightness(v);
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
-      if (mode === "0") invoke("set_led_lighting", { brightness: v - 1, colorTemp: parseInt(colorTemp) });
-      else if (mode === "2") invoke("set_led_solid", { brightness: v - 1, color: parseInt(colorValue) });
+      if (mode === "0") invoke("set_led_lighting", { brightness: v - 1, colorTemp: parseInt(colorTemp) }).catch((e) => console.error("set_led_lighting failed:", e));
+      else if (mode === "2") invoke("set_led_solid", { brightness: v - 1, color: parseInt(colorValue) }).catch((e) => console.error("set_led_solid failed:", e));
     }, 300);
   };
 
   const handleColorTemp = (v: string) => {
     if (!v) return;
     setColorTemp(v);
-    invoke("set_led_lighting", { brightness: brightness - 1, colorTemp: parseInt(v) });
+    invoke("set_led_lighting", { brightness: brightness - 1, colorTemp: parseInt(v) }).catch((e) => console.error("set_led_lighting failed:", e));
   };
 
   const handleColorValue = (v: string) => {
     if (!v) return;
     setColorValue(v);
-    invoke("set_led_solid", { brightness: brightness - 1, color: parseInt(v) });
+    invoke("set_led_solid", { brightness: brightness - 1, color: parseInt(v) }).catch((e) => console.error("set_led_solid failed:", e));
   };
 
   return (

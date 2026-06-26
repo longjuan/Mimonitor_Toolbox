@@ -20,11 +20,10 @@ interface SliderRowProps {
 function SliderRow({ label, settingKey, min, max, step = 1, disabled, settings }: SliderRowProps) {
   const [value, setValue] = useState(min);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
-  const initialized = useRef(false);
 
   useEffect(() => {
     const v = parseInt(settings[settingKey] || String(min));
-    if (!isNaN(v) && !initialized.current) { setValue(v); initialized.current = true; }
+    if (!isNaN(v)) setValue(v);
   }, [settings, settingKey, min]);
 
   const handleChange = (vals: number[]) => {
@@ -84,6 +83,9 @@ export default function Picture() {
       setDynamicDef(s["picture_dynamic_definition"] || "0");
       setResponseTime(s["picture_response_time"] || "1");
       setColorSpace(s["tv_picture_advanced_video_color_space"] || "0");
+      setLoading(false);
+    }).catch((e) => {
+      console.error("get_picture_settings failed:", e);
       setLoading(false);
     });
   }, []);

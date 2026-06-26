@@ -91,9 +91,9 @@ pub fn run() {
                         if connected {
                             let guard = state.adb.read().await;
                             if let Some(ref adb) = *guard {
-                                match adb.shell("get-state") {
+                                match adb.shell("echo ok") {
                                     Ok(output) => {
-                                        if !output.trim().contains("device") {
+                                        if !output.trim().contains("ok") {
                                             log::warn!("ADB device not responding, attempting reconnect");
                                             drop(guard);
                                             let ip = state.connection_ip.read().await.clone();
@@ -108,6 +108,15 @@ pub fn run() {
                                     }
                                     Err(e) => {
                                         log::warn!("Keepalive check failed: {}", e);
+                                        drop(guard);
+                                        let ip = state.connection_ip.read().await.clone();
+                                        let mut adb_guard = state.adb.write().await;
+                                        if let Some(ref mut adb) = *adb_guard {
+                                            if let Err(e) = adb.connect(&ip) {
+                                                log::error!("Reconnect failed: {}", e);
+                                                *state.connected.write().await = false;
+                                            }
+                                        }
                                     }
                                 }
                             }

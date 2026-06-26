@@ -26,6 +26,7 @@ pub async fn get_picture_settings(state: State<'_, AppState>) -> Result<serde_js
         for (key, val) in keys.iter().zip(values.iter()) {
             result.insert(key.to_string(), serde_json::Value::String(val.clone()));
         }
+        log::info!("get_picture_settings: {:?}", result);
         Ok(serde_json::Value::Object(result))
     })
     .await

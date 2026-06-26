@@ -2,7 +2,6 @@ use super::{AdbClient, AdbError, AdbResult};
 
 const JAR_NAME: &str = "MonitorTool.jar";
 const JAR_REMOTE: &str = "/sdcard/MonitorTool.jar";
-const JAR_CACHE: &str = "/data/data/mitv.service/cache/MonitorTool.jar";
 
 /// Ensure MonitorTool.jar is deployed to the device
 pub fn ensure_jar(adb: &AdbClient) -> AdbResult<bool> {
@@ -20,11 +19,6 @@ pub fn ensure_jar(adb: &AdbClient) -> AdbResult<bool> {
         adb.push(&local_jar, JAR_REMOTE)?;
         log::info!("Pushed {} to device", JAR_NAME);
     }
-
-    adb.shell(&format!(
-        "service call TvService 3 s16 \"cp {} {}\"",
-        JAR_REMOTE, JAR_CACHE
-    ))?;
     Ok(true)
 }
 
@@ -56,8 +50,8 @@ pub fn run_command(adb: &AdbClient, args: &[&str]) -> AdbResult<String> {
         .map(|p| format!("\\${{IFS}}{}", p))
         .collect();
     let cmd = format!(
-        "service call TvService 3 s16 \"sh -c eval\\${{IFS}}CLASSPATH={}\\${{IFS}}/system/bin/app_process\\${{IFS}}/data/data/mitv.service/cache{}\"",
-        JAR_CACHE, cmd_args
+        "service call TvService 3 s16 \"sh -c eval\\${{IFS}}CLASSPATH={}\\${{IFS}}/system/bin/app_process\\${{IFS}}/sdcard{}\"",
+        JAR_REMOTE, cmd_args
     );
     adb.shell(&cmd)
 }

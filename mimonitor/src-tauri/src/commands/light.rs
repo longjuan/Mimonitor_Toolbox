@@ -24,6 +24,7 @@ pub async fn get_light_settings(state: State<'_, AppState>) -> Result<serde_json
             let val = adb.get_setting(key).unwrap_or_default();
             result.insert(key.to_string(), serde_json::Value::String(val));
         }
+        log::info!("get_light_settings: {:?}", result);
         Ok(serde_json::Value::Object(result))
     })
     .await
@@ -32,6 +33,7 @@ pub async fn get_light_settings(state: State<'_, AppState>) -> Result<serde_json
 /// Set LED mode — sends HIDL command AND updates Android setting
 #[tauri::command]
 pub async fn set_led_mode(state: State<'_, AppState>, mode: String) -> Result<(), String> {
+    log::info!("set_led_mode: {}", mode);
     with_adb(&state, |adb| {
         adb::jni::led_command(adb, &mode, &[]).map_err(|e| e.to_string())?;
         let setting_val = match mode.as_str() {
@@ -55,6 +57,7 @@ pub async fn set_led_lighting(
     brightness: i32,
     color_temp: i32,
 ) -> Result<(), String> {
+    log::info!("set_led_lighting: brightness={}, color_temp={}", brightness, color_temp);
     with_adb(&state, |adb| {
         adb::jni::led_command(adb, "lighting", &[&brightness.to_string(), &color_temp.to_string()])
             .map_err(|e| e.to_string())?;
@@ -73,6 +76,7 @@ pub async fn set_led_solid(
     brightness: i32,
     color: i32,
 ) -> Result<(), String> {
+    log::info!("set_led_solid: brightness={}, color={}", brightness, color);
     with_adb(&state, |adb| {
         adb::jni::led_command(adb, "solid", &[&brightness.to_string(), &color.to_string()])
             .map_err(|e| e.to_string())?;

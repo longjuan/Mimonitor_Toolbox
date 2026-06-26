@@ -8,6 +8,7 @@ JAR_OUT        := mimonitor/resources/MonitorTool.jar
 # Local SDK cache (not committed)
 SDK_DIR        := tools/monitor-tool/.sdk
 CMDLINE_TOOLS  := $(SDK_DIR)/cmdline-tools/latest/bin/sdkmanager
+D8             := $(SDK_DIR)/build-tools/34.0.0/d8
 
 # Proxy (set via env or make PROXY=...)
 PROXY          ?= $(or $(https_proxy),$(http_proxy))
@@ -23,7 +24,7 @@ endif
 
 all: jar
 
-# ── Android SDK platform (android.jar) ───────────────────────
+# ── Android SDK platform (android.jar) + build-tools (d8) ───
 
 $(CMDLINE_TOOLS):
 	@echo "==> Downloading Android cmdline-tools..."
@@ -45,11 +46,16 @@ $(ANDROID_JAR): $(CMDLINE_TOOLS)
 	@cp $(SDK_DIR)/platforms/android-$(ANDROID_API)/android.jar $@
 	@echo "==> android.jar ready"
 
-# ── Compile MonitorTool.java → MonitorTool.jar ───────────────
+$(D8): $(CMDLINE_TOOLS)
+	@echo "==> Installing build-tools..."
+	yes | $(CMDLINE_TOOLS) --sdk_root=$(SDK_DIR) "build-tools;34.0.0" >/dev/null 2>&1
+	@echo "==> build-tools installed"
+
+# ── Compile MonitorTool.java → MonitorTool.jar (DEX format) ──
 
 STUBS_DIR      := tools/monitor-tool/stubs
 
-jar: $(ANDROID_JAR) $(JAR_SRC)
+jar: $(ANDROID_JAR) $(D8) $(JAR_SRC)
 	@echo "==> Compiling HIDL stubs..."
 	@mkdir -p build/stubs
 	javac -source 8 -target 8 \
@@ -62,7 +68,10 @@ jar: $(ANDROID_JAR) $(JAR_SRC)
 		-classpath "$(ANDROID_JAR):build/stubs" \
 		-d build/monitor-tool \
 		$(JAR_SRC)
+	@echo "==> Converting to DEX format..."
+	$(D8) --output build/monitor-tool build/monitor-tool/MonitorTool.class
 	@echo "==> Packaging MonitorTool.jar..."
+	@rm -f build/monitor-tool/MonitorTool.class
 	jar cf $(JAR_OUT) -C build/monitor-tool .
 	@rm -rf build/monitor-tool build/stubs
 	@echo "==> $(JAR_OUT) ready ($$(wc -c < $(JAR_OUT) | tr -d ' ') bytes)"
