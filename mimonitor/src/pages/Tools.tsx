@@ -9,6 +9,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 export default function Tools() {
   const [config, setConfig] = useState<any>({});
   const [guardianStatus, setGuardianStatus] = useState<any>(null);
+  const [deploying, setDeploying] = useState(false);
 
   useEffect(() => { invoke<any>("get_config").then(setConfig); }, []);
 
@@ -16,6 +17,18 @@ export default function Tools() {
 
   const updateConfig = (updates: any) => {
     invoke("update_config", { updates }).then(() => invoke<any>("get_config").then(setConfig));
+  };
+
+  const handleDeploy = async () => {
+    setDeploying(true);
+    try {
+      await invoke("deploy_guardian");
+      await refreshGuardian();
+    } catch (e) {
+      console.error("deploy_guardian failed:", e);
+    } finally {
+      setDeploying(false);
+    }
   };
 
   return (
@@ -80,8 +93,8 @@ export default function Tools() {
               <Wrench className="h-3.5 w-3.5 mr-1.5" />
               检测状态
             </Button>
-            <Button size="sm" onClick={() => invoke("deploy_guardian").then(refreshGuardian)}>
-              部署/修复
+            <Button size="sm" onClick={handleDeploy} disabled={deploying}>
+              {deploying ? "部署中..." : "部署/修复"}
             </Button>
           </div>
         </CardContent>

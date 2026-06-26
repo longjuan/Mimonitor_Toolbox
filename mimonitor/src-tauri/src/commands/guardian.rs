@@ -14,7 +14,11 @@ pub async fn get_guardian_status(state: State<'_, AppState>) -> Result<serde_jso
 /// Deploy guardian APK
 #[tauri::command]
 pub async fn deploy_guardian(state: State<'_, AppState>) -> Result<(), String> {
+    log::info!("deploy_guardian called");
     let guard = state.adb.read().await;
     let adb = guard.as_ref().ok_or("Not connected")?;
-    adb::guardian::deploy(adb).map_err(|e| e.to_string())
+    adb::guardian::deploy(adb).map_err(|e| {
+        log::error!("deploy_guardian failed: {}", e);
+        e.to_string()
+    })
 }
