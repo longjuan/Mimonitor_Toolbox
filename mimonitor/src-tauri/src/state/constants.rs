@@ -41,6 +41,7 @@ pub const JNI_LOCAL_DIMMING: &str = "g_video__vid_local_dimming";
 pub const JNI_GAMUT: &str = "g_video__vid_gamut_mapping_mode";
 pub const JNI_RESPONSE_TIME: &str = "g_video__vid_od_response_time";
 pub const JNI_INSERT_BLACK: &str = "g_video__vid_insert_black";
+pub const JNI_HDR_TONE_MAPPING: &str = "g_video__vid_hdr_tone_mapping_mode";
 pub const JNI_FREESYNC_DP: &str = "g_video__dp_adaptive_sync";
 pub const JNI_FREESYNC_HDMI: &str = "g_video__freesync_switch";
 pub const JNI_EDID_DP: &str = "g_fusion_picture__dp_edid_version";
@@ -66,7 +67,16 @@ pub const SET_DYNAMIC_DEF: &str = "picture_dynamic_definition";
 pub const SET_RESPONSE_TIME: &str = "picture_response_time";
 pub const SET_COLOR_SPACE: &str = "tv_picture_advanced_video_color_space";
 pub const SET_COLOR_SPACE_TV: &str = "tv_picture_video_color_space";
+pub const SET_HDR_TONE_MAPPING: &str = "settings_display_hdr_color_tone";
 pub const SET_SOURCE: &str = "mitv.tvplayer.hdmi.last.source";
+
+// HDR tone mapping: UI value → MTK JNI value
+pub const HDR_TONE_MAPPING_UI_TO_MTK: &[(i32, i32)] = &[
+    (0, 5), // HGiG
+    (1, 0), // 层次
+    (2, 2), // 动态
+    (3, 1), // 明亮
+];
 
 // Game settings
 pub const SET_CROSSHAIR: &str = "front_sight_index";

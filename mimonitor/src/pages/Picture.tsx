@@ -71,7 +71,12 @@ export default function Picture() {
   const [dynamicDef, setDynamicDef] = useState("0");
   const [responseTime, setResponseTime] = useState("1");
   const [colorSpace, setColorSpace] = useState("0");
+  const [hdrToneMapping, setHdrToneMapping] = useState("0");
   const [settings, setSettings] = useState<Record<string, string>>({});
+
+  // HDR picture modes that support tone mapping
+  const HDR_MODES = new Set([11,12,13,15,16,17,18,19,22,23,29,30,31,32,33,39,40,41,42,43,44]);
+  const showHdrToneMapping = HDR_MODES.has(parseInt(pictureMode));
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -83,6 +88,7 @@ export default function Picture() {
       setDynamicDef(s["picture_dynamic_definition"] || "0");
       setResponseTime(s["picture_response_time"] || "1");
       setColorSpace(s["tv_picture_advanced_video_color_space"] || "0");
+      setHdrToneMapping(s["settings_display_hdr_color_tone"] || "0");
       setLoading(false);
     }).catch((e) => {
       console.error("get_picture_settings failed:", e);
@@ -145,6 +151,11 @@ export default function Picture() {
             <ButtonGroup label="精密控光" value={localDimming} onChange={handleChange(setLocalDimming, "set_local_dimming")} disabled={disabled} options={[
               { value: "0", label: "关" }, { value: "1", label: "低" }, { value: "2", label: "中" }, { value: "3", label: "高" },
             ]} />
+            {showHdrToneMapping && (
+              <ButtonGroup label="HDR 色调映射" value={hdrToneMapping} onChange={handleChange(setHdrToneMapping, "set_hdr_tone_mapping")} disabled={disabled} options={[
+                { value: "0", label: "HGiG" }, { value: "1", label: "层次" }, { value: "2", label: "动态" }, { value: "3", label: "明亮" },
+              ]} />
+            )}
             <ButtonGroup label="动态清晰度" value={dynamicDef} onChange={handleChange(setDynamicDef, "set_dynamic_definition")} disabled={disabled} options={[
               { value: "0", label: "关" }, { value: "1", label: "低" }, { value: "2", label: "中" }, { value: "3", label: "高" },
             ]} />

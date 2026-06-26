@@ -113,6 +113,29 @@ public class MonitorTool {
         writeResult(String.valueOf(ret));
     }
 
+    private static void cmdSetHdrToneMapping(ClassLoader cl, int value, int isUpdate) throws Exception {
+        Class<?> tvNative = cl.loadClass("com.mediatek.twoworlds.tv.TVNative");
+        Method set = tvNative.getDeclaredMethod(
+                "setConfigValue_native", int.class, String.class, int.class, int.class);
+        set.setAccessible(true);
+        int configRet = (Integer) set.invoke(null, -1, "g_video__vid_hdr_tone_mapping_mode", value, isUpdate);
+
+        Integer hdrAttrRet = null;
+        try {
+            Class<?> providerClass = cl.loadClass("xiaomi.hardware.mitv.provider.V1_0.IMiTVProvider");
+            Object provider = providerClass.getMethod("getService", boolean.class).invoke(null, false);
+            if (provider != null) {
+                hdrAttrRet = (Integer) providerClass.getMethod("setHdrAttr", int.class, int.class)
+                        .invoke(provider, 4, value);
+            }
+        } catch (Exception e) {
+            log("WARN: setHdrAttr failed: " + e.getMessage());
+        }
+        log("RESULT: SET_HDR_TONE_MAPPING value=" + value + ", configReturn: " + configRet
+                + ", hdrAttrReturn: " + (hdrAttrRet == null ? "N/A" : hdrAttrRet));
+        writeResult(String.valueOf(configRet));
+    }
+
     private static void cmdDump(ClassLoader cl) throws Exception {
         Class<?> tvNative = cl.loadClass("com.mediatek.twoworlds.tv.TVNative");
         Method get = tvNative.getDeclaredMethod("getConfigValue_native", int.class, String.class);
@@ -250,7 +273,7 @@ public class MonitorTool {
 
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
-            log("Usage: MonitorTool <get|set|getMinMax|setColorGains|dump|led> [args]");
+            log("Usage: MonitorTool <get|set|getMinMax|setColorGains|setHdrToneMapping|dump|led> [args]");
             return;
         }
 
@@ -278,6 +301,11 @@ public class MonitorTool {
                 } else if ("setColorGains".equals(cmd)) {
                     if (args.length < 4) { log("ERROR: setColorGains requires r g b"); writeResult("ERROR"); return; }
                     cmdSetColorGains(cl, Integer.parseInt(args[1]), Integer.parseInt(args[2]), Integer.parseInt(args[3]));
+                } else if ("setHdrToneMapping".equals(cmd)) {
+                    if (args.length < 2) { log("ERROR: setHdrToneMapping requires value [isUpdate]"); writeResult("ERROR"); return; }
+                    int hdrValue = Integer.parseInt(args[1]);
+                    int hdrIsUpdate = args.length >= 3 ? Integer.parseInt(args[2]) : 3;
+                    cmdSetHdrToneMapping(cl, hdrValue, hdrIsUpdate);
                 } else if ("dump".equals(cmd)) {
                     cmdDump(cl);
                 } else {

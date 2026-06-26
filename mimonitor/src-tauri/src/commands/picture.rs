@@ -20,6 +20,7 @@ pub async fn get_picture_settings(state: State<'_, AppState>) -> Result<serde_js
             SET_PICTURE_MODE, SET_BACKLIGHT, SET_BRIGHTNESS, SET_CONTRAST,
             SET_SATURATION, SET_HUE, SET_SHARPNESS, SET_COLOR_TEMP,
             SET_LOCAL_DIMMING, SET_DYNAMIC_DEF, SET_RESPONSE_TIME, SET_COLOR_SPACE,
+            SET_HDR_TONE_MAPPING,
         ];
         let values = adb.get_settings_batch(&keys).map_err(|e| e.to_string())?;
         let mut result = serde_json::Map::new();
@@ -152,6 +153,21 @@ pub async fn set_color_gains(
 pub async fn reset_picture_mode(state: State<'_, AppState>) -> Result<(), String> {
     with_adb(&state, |adb| {
         adb::jni::jni_set(adb, JNI_RESET, 0, 3).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+}
+
+/// Set HDR tone mapping mode
+#[tauri::command]
+pub async fn set_hdr_tone_mapping(state: State<'_, AppState>, value: i32) -> Result<(), String> {
+    log::info!("set_hdr_tone_mapping: {}", value);
+    with_adb(&state, |adb| {
+        adb.put_setting(SET_HDR_TONE_MAPPING, &value.to_string())
+            .map_err(|e| e.to_string())?;
+        if let Some(&(_, mtk_val)) = HDR_TONE_MAPPING_UI_TO_MTK.iter().find(|(k, _)| *k == value) {
+            let _ = adb::jni::hdr_tone_mapping(adb, mtk_val);
+        }
         Ok(())
     })
     .await

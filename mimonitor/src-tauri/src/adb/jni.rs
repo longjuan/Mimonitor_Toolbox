@@ -87,6 +87,12 @@ pub fn jni_set_color_gains(adb: &AdbClient, r: i32, g: i32, b: i32) -> AdbResult
     run_command(adb, &["setColorGains", &r.to_string(), &g.to_string(), &b.to_string()])
 }
 
+/// Set HDR tone mapping mode
+pub fn hdr_tone_mapping(adb: &AdbClient, value: i32) -> AdbResult<String> {
+    log::debug!("hdr_tone_mapping = {}", value);
+    run_command(adb, &["setHdrToneMapping", &value.to_string(), "3"])
+}
+
 /// LED control via MonitorTool led subcommand
 pub fn led_command(adb: &AdbClient, subcmd: &str, args: &[&str]) -> AdbResult<String> {
     let all_args: Vec<&str> = std::iter::once("led")

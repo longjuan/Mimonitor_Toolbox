@@ -169,6 +169,7 @@ pub fn run() {
             commands::picture::set_color_space,
             commands::picture::set_response_time,
             commands::picture::set_dynamic_definition,
+            commands::picture::set_hdr_tone_mapping,
             commands::picture::set_color_gains,
             commands::picture::reset_picture_mode,
             commands::picture::refresh_pq,
