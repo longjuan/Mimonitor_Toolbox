@@ -87,14 +87,17 @@ pub fn deploy(adb: &AdbClient) -> AdbResult<()> {
     let apk_path = find_guardian_apk()?;
     log::info!("Deploying guardian from {}", apk_path);
 
-    // Push APK to device
-    let remote_apk = format!("/sdcard/{}", GUARDIAN_APK);
+    // Push APK to /data/local/tmp (pm install can't read /sdcard due to SELinux)
+    let remote_apk = format!("/data/local/tmp/{}", GUARDIAN_APK);
     adb.push(&apk_path, &remote_apk)?;
     log::info!("Pushed guardian APK to {}", remote_apk);
 
     // Install
     let output = adb.shell(&format!("pm install -r -d {}", remote_apk))?;
     log::info!("pm install: {}", output.trim());
+
+    // Clean up
+    let _ = adb.shell(&format!("rm -f {}", remote_apk));
 
     // Grant WRITE_SECURE_SETTINGS
     let _ = adb.shell(&format!(
