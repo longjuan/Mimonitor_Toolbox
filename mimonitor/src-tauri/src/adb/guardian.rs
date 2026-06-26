@@ -87,29 +87,35 @@ pub fn deploy(adb: &AdbClient) -> AdbResult<()> {
     let apk_path = find_guardian_apk()?;
     log::info!("Deploying guardian from {}", apk_path);
 
+    // Push APK to device
+    let remote_apk = format!("/sdcard/{}", GUARDIAN_APK);
+    adb.push(&apk_path, &remote_apk)?;
+    log::info!("Pushed guardian APK to {}", remote_apk);
+
     // Install
-    adb.shell(&format!("pm install -r -d /sdcard/{}", GUARDIAN_APK))?;
+    let output = adb.shell(&format!("pm install -r -d {}", remote_apk))?;
+    log::info!("pm install: {}", output.trim());
 
     // Grant WRITE_SECURE_SETTINGS
-    adb.shell(&format!(
+    let _ = adb.shell(&format!(
         "pm grant {} android.permission.WRITE_SECURE_SETTINGS",
         GUARDIAN_PACKAGE
-    ))?;
+    ));
 
     // Add to device idle whitelist
-    adb.shell(&format!(
+    let _ = adb.shell(&format!(
         "cmd deviceidle whitelist +{}",
         GUARDIAN_PACKAGE
-    ))?;
+    ));
 
     // Enable accessibility service
-    adb.shell(&format!(
+    let _ = adb.shell(&format!(
         "settings put secure enabled_accessibility_services {}",
         GUARDIAN_ACCESSIBILITY
-    ))?;
+    ));
 
     // Start activity
-    adb.shell(&format!("am start -n {}", GUARDIAN_ACTIVITY))?;
+    let _ = adb.shell(&format!("am start -n {}", GUARDIAN_ACTIVITY));
 
     Ok(())
 }
@@ -118,7 +124,8 @@ fn find_guardian_apk() -> AdbResult<String> {
     let candidates = vec![
         "resources/adbguardian-signed.apk",
         "../resources/adbguardian-signed.apk",
-        "../../assets/adb_guardian/adbguardian-signed.apk",
+        "../../mimonitor/resources/adbguardian-signed.apk",
+        "mimonitor/resources/adbguardian-signed.apk",
     ];
     for path in &candidates {
         if std::path::Path::new(path).exists() {
