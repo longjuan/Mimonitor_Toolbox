@@ -1,9 +1,33 @@
+# Python (archived)
 __pycache__/
 *.pyc
+*.pyo
+
+# Build artifacts
 dist/
 build/
 *.spec
-!MonitorToolbox.spec
 logs/
+
+# Rust / Tauri
+mimonitor/src-tauri/target/
+mimonitor/node_modules/
+mimonitor/dist/
+
+# OS
 *.Zone.Identifier
+.DS_Store
+Thumbs.db
+
+# Archive (old Python project)
+archive/
+
+# Config
+.mimocode/
+
+# Temp
 ok.py
+
+# Android SDK cache (build dependency)
+tools/monitor-tool/.sdk/
+tools/monitor-tool/android.jar

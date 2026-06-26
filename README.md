@@ -1,131 +1,172 @@
 # Mimonitor Toolbox
 
-Redmi G Pro 27U 2026显示器 ADB 控制工具
-测试机器系统版本号：HyperOS 3.0.112.0  
-不确定小米是否后续会对该行为进行阻止 且用且珍惜吧 尚不知2025是否可用  
-摸索了很久 有点地方写的也不怎么样 有问题欢迎issue  
-如果觉得本项目对你有帮助，欢迎点亮一颗 ⭐ (Star) 支持一下！或者，您也可以通过赞助 Sponsor 请我喝杯快乐水。开源不易，感谢认可！🙌  
-
-<img src="assets/e41e5c8458c34a6e2f7c46b92be05381.png" width="300"> <img src="assets/116be2f82c8a3f88e57f95cf4f11c0a9.jpg" width="300">
-
-## 软件截图
-
-<img src="assets/Screensettings.png" width="500">
-<img src="assets/Gamesettings.png" width="500">
-
-## 实现原理
-
-通过无线 ADB 连接到显示器内置的 Android 系统，利用 `settings` 命令和 MTK 平台 JNI 接口（`MtkDirectTool.jar`）直接读写硬件寄存器，实现对显示器各项参数的精确控制。
-
-### 通信架构
-
-```
-PC (MonitorToolbox.exe)
-  │
-  ├─ ADB Wireless ──► 显示器 Android 系统 (port 5555)
-  │
-  ├─ settings get/put ──► 读写 Android Global Settings
-  │   (picture_mode, picture_backlight, picture_contrast, ...)
-  │
-  └─ MtkDirectTool.jar ──► MTK JNI 直写硬件寄存器
-      (背光 g_disp__disp_back_light)
-      (色温 g_video__clr_temp)
-      (色域 g_video__vid_gamut_mapping_mode)
-      (精密控光 g_video__vid_local_dimming)
-      (320Hz g_fusion_picture__hdmi_edid_version)
-      (FreeSync g_video__freesync_switch)
-      (恢复默认 g_fusion_picture__pic_reset_def_bypicmode)
-
-  └─ ColorfulLedTool.jar ──► MiTV PM2 炫彩灯 HIDL 接口
-      (炫彩灯模式)
-      (照明色温)
-      (纯色颜色)
-      (亮度)
-```
-
-### JNI 调用方式
-
-通过 `service call TvService` 调用系统服务，以 `app_process` 执行 jar 包中的 Java 类：
-
-```bash
-# 读取寄存器
-service call TvService 3 s16 "sh -c eval\${IFS}CLASSPATH=/data/data/mitv.service/cache/MtkDirectTool.jar\${IFS}/system/bin/app_process\${IFS}/data/data/mitv.service/cache\${IFS}MtkDirectTool\${IFS}get\${IFS}g_disp__disp_back_light"
-
-# 写入寄存器
-service call TvService 3 s16 "sh -c eval\${IFS}CLASSPATH=...\${IFS}MtkDirectTool\${IFS}set\${IFS}g_disp__disp_back_light\${IFS}50\${IFS}3"
-```
-
-读取结果通过 `logcat` 获取。
-
-### 数据加载策略
-
-采用按需加载，不持续轮询：
-
-1. **首次进入页面** — 读取该页面所有 settings key + JNI 寄存器，显示 loading 遮罩
-2. **再次进入** — 直接使用缓存数据，不重新读取
-3. **手动刷新** — 点击"刷新数据"按钮强制重新读取
-4. **模式切换** — 自动刷新当前页面数据
-
-### Jar 自动部署
-
-首次连接时自动检测并补齐 `MtkDirectTool.jar` / `ColorfulLedTool.jar`：
-
-1. 检查设备 `/sdcard/` 是否已有 jar
-2. 没有则从本地 push 到 `/sdcard/`
-3. 从 `/sdcard/` 复制到 `/data/data/mitv.service/cache/`
-
-打包后 jar 会从 `assets/runtime/` 嵌入 exe 中（PyInstaller `--add-binary`）。
+红米 G Pro 27U 显示器控制工具 — 通过无线 ADB 连接并调优您的 MiniLED 旗舰显示器。
 
 ## 功能
 
-- 无线 ADB 连接，内网设备自动扫描
-- 画面设置：模式 / 背光 / 黑色级别 / 对比度 / 饱和度 / 色调 / 锐度 / 色温 / 精密控光 / 动态清晰度 / 响应时间 / 色域
-- 游戏模式：准星 / 动态准星 / 狙击镜 / 夜视 / 320Hz / FreeSync / FPS 计数器 / 秒表 / 定时器
-- 信号源切换（HDMI 1/2 / DP / USBC）
-- 屏幕灯：炫彩灯模式 / 亮度挡位 / 纯色颜色 / 照明色温
-- 虚拟遥控器
-- 全局快捷键（Windows）+ OSD 悬浮通知
-- 开机自启动最小化
-- 4K UI 模式（3840×2160 / DPI 640，需重启显示器）
-- ADB 保活守护部署与状态检测（内置 `assets/adb_guardian/adbguardian-signed.apk`）
-- 操作日志记录与导出
+| 类别 | 功能 |
+|------|------|
+| **画面设置** | 模式(标准/游戏/电影)、背光、黑色级别、对比度、饱和度、色调、锐度、色温(冷/标准/暖/原色/自定义)、RGB 增益、精密控光(关/低/中/高)、动态清晰度、响应时间、色域(sRGB/DCI-P3/AdobeRGB/BT2020/BT709) |
+| **游戏模式** | 准星(5种)、动态准星、狙击镜(1.1x-2.0x)、夜视、320Hz 竞技、FreeSync Premium Pro、FPS 计数器、秒表、定时器 |
+| **输入源** | HDMI 1/2、DP、USBC 一键切换 |
+| **屏幕灯光** | 照明(2700K/4000K/6500K)、纯色(冰蓝/流金/天青/草地/日落)、屏幕同色、七彩循环 |
+| **虚拟遥控器** | 电源、Home、菜单、返回、D-Pad、音量 |
+| **AI 集成** | MCP Server + CLI + TCP Socket，支持 Claude Code 等 AI 工具直接控制 |
+| **跨平台** | macOS + Windows (Linux 可选) |
 
-## 项目资源结构
+## 技术栈
 
-```text
-assets/
-  app/
-    icon.ico
-  runtime/
-    adb.exe
-    AdbWinApi.dll
-    AdbWinUsbApi.dll
-    MtkDirectTool.jar
-    ColorfulLedTool.jar
-  adb_guardian/
-    adbguardian-signed.apk
-tools/
-  colorful_led/
-    ColorfulLedTool.java
-```
+| 组件 | 技术 |
+|------|------|
+| 语言 | Rust |
+| GUI | Tauri v2 + React + TypeScript + shadcn/ui |
+| ADB | adb_client (纯 Rust ADB 协议，无需 bundled adb 二进制) |
+| 硬件控制 | MonitorTool.jar (MTK JNI + MiTV PM2 HIDL) |
+| IPC | TCP Socket (JSON-RPC) + MCP (stdio) |
+| 异步 | tokio |
+| 打包 | macOS DMG / Windows NSIS / Linux AppImage |
 
-`assets/runtime/` 是主程序运行所需的本地工具，`assets/adb_guardian/` 是可部署到显示器端的 ADB 保活应用，`tools/colorful_led/` 保留屏幕灯 helper 源码。
+## 快速开始
 
-## 打包
+### 环境要求
+
+- Rust 1.77+
+- Node.js 18+
+
+### 开发模式
 
 ```bash
-# 安装锁定的构建依赖
-python -m pip install -r requirements-build.txt
-
-# 使用与 build.bat、GitHub Actions 相同的资源清单打包
-python -m PyInstaller --clean --noconfirm MonitorToolbox.spec
+cd mimonitor
+npm install
+cargo tauri dev
 ```
 
-## 依赖
+### 构建应用
 
-- Python 3.10+
-- PyQt6（版本见 `requirements-build.txt`）
-- PyQt-Fluent-Widgets（版本见 `requirements-build.txt`）
-- ADB（打包进 exe，无需额外安装）
+```bash
+cd mimonitor
+npm install
+cargo tauri build
+```
 
-## 感谢认可！🙌
+产物位于 `mimonitor/src-tauri/target/release/bundle/`。
+
+### 运行测试
+
+```bash
+cd mimonitor/src-tauri
+cargo test
+```
+
+## 使用方式
+
+### GUI 应用
+
+启动后自动扫描内网，发现一台设备时自动连接。支持：
+- 画面参数实时调节 (300ms 防抖)
+- 灯光模式切换 (即时响应)
+- 虚拟遥控器
+- 日志记录与导出
+
+### CLI 命令
+
+应用启动后会监听本地 TCP 端口 (端口号写入 `~/.mimonitor/port`)，CLI 通过 JSON-RPC 协议通信。
+
+支持的 RPC 方法:
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `scan` | - | 扫描内网设备 |
+| `connect` | `{ip}` | 连接设备 |
+| `disconnect` | - | 断开连接 |
+| `get_status` | - | 获取连接状态 |
+| `get_setting` | `{key}` | 读取设置 |
+| `set_setting` | `{key, value}` | 写入设置 |
+| `get_picture_settings` | - | 批量读取画面设置 |
+| `get_game_settings` | - | 批量读取游戏设置 |
+| `get_light_settings` | - | 批量读取灯光设置 |
+| `set_led` | `{mode, brightness?, color?, color_temp?}` | 控制 LED |
+| `set_input_source` | `{source}` | 切换输入源 |
+| `send_key` | `{key}` | 发送遥控器按键 |
+
+### Claude Code 集成 (MCP)
+
+在项目根目录创建 `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "mimonitor": {
+      "command": "mimonitor",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+MCP 工具:
+
+| 工具 | 说明 |
+|------|------|
+| `scan` | 扫描内网 |
+| `connect` | 连接设备 |
+| `set_picture_mode` | 切换画面模式 |
+| `set_picture_setting` | 设置画面参数 |
+| `set_local_dimming` | 设置精密控光 |
+| `set_led` | 控制 LED 灯光 |
+| `set_input_source` | 切换输入源 |
+| `send_remote_key` | 发送遥控器按键 |
+| `get_monitor_status` | 获取显示器状态 |
+
+使用示例:
+```
+用户: "帮我把显示器调成游戏模式，背光 80"
+Claude Code → set_picture_mode(game) + set_picture_setting(backlight, 80)
+
+用户: "任务完成了，亮灯"
+Claude Code → set_led(solid, brightness=14, color=ice-blue)
+```
+
+## 实现原理
+
+```
+PC (Mimonitor)
+  │
+  ├─ ADB Wireless (port 5555) ──► 显示器 Android 系统
+  │
+  ├─ settings get/put ──► 读写 Android Global Settings
+  │
+  └─ MonitorTool.jar ──► MTK JNI + MiTV PM2 HIDL
+      ├─ get/set/getMinMax/setColorGains/dump
+      └─ led off/ambient/cycle/lighting/solid/raw
+```
+
+## 项目结构
+
+```
+Mimonitor_Toolbox/
+├── mimonitor/                  # 应用主体
+│   ├── src-tauri/              # Rust 后端
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── adb/            # ADB 客户端、JNI、LED、扫描
+│   │       ├── commands/       # Tauri IPC 命令
+│   │       ├── socket/         # TCP Socket 服务
+│   │       ├── mcp/            # MCP 工具定义
+│   │       ├── hdr/            # HDR 检测
+│   │       └── state/          # 应用状态 + 配置
+│   ├── src/                    # React 前端
+│   │   ├── pages/              # 功能页面
+│   │   ├── components/ui/      # UI 组件
+│   │   └── styles/             # 样式
+│   └── resources/              # MonitorTool.jar、APK
+├── tools/
+│   └── monitor-tool/           # MonitorTool.java 源码
+├── .github/workflows/          # CI/CD
+├── CLAUDE.md                   # AI 开发上下文
+└── README.md
+```
+
+## License
+
+MIT
