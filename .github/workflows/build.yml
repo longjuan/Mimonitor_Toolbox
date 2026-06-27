@@ -109,6 +109,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: mimonitor
+          tagName: v__VERSION__
+          releaseName: v__VERSION__
+          releaseBody: ''
+          releaseDraft: false
+          prerelease: false
           args: --target ${{ matrix.target }}
 
   build-universal:
@@ -143,4 +148,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: mimonitor
+          tagName: v__VERSION__
+          releaseName: v__VERSION__
+          releaseBody: ''
+          releaseDraft: false
+          prerelease: false
           args: --target universal-apple-darwin
