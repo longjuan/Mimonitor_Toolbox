@@ -25,12 +25,6 @@ pub fn run() {
         }))
         .manage(state::AppState::new())
         .setup(|app| {
-            // On Windows, remove decorations (title bar) to match macOS Overlay style
-            #[cfg(target_os = "windows")]
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_decorations(false);
-            }
-
             // Start socket server in background
             let socket_state = app.state::<state::AppState>();
             let adb = socket_state.adb.clone();
