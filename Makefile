@@ -12,7 +12,7 @@ D8             := $(SDK_DIR)/build-tools/34.0.0/d8
 
 # Proxy (set via env or make PROXY=...)
 PROXY          ?= $(or $(https_proxy),$(http_proxy))
-CURL           := curl $(if $(PROXY),-x $(PROXY),)
+CURL           := curl --retry 3 --retry-delay 5 $(if $(PROXY),-x $(PROXY),)
 
 # Platform detection for cmdline-tools download
 UNAME_S        := $(shell uname -s)
