@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { useState, useEffect, useCallback } from "react";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 
@@ -29,38 +28,34 @@ export default function Source() {
   useEffect(() => { refresh(); }, [refresh]);
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">输入源</h1>
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-sm font-medium mb-4">输入源</h1>
         <Button variant="outline" size="sm" onClick={refresh} disabled={!loaded}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" />刷新
+          <RefreshCw className="h-3 w-3 mr-1" />刷新
         </Button>
       </div>
 
-      <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-sm font-medium">信号源切换</CardTitle></CardHeader>
-        <CardContent>
-          <ToggleGroup type="single" value={String(activeSource)} onValueChange={(v) => {
-            if (v) {
-              const id = parseInt(v);
-              setActiveSource(id);
-              setSourceName(SOURCES.find((s) => s.id === id)?.name || "");
-              invoke("set_input_source", { sourceId: id });
-            }
-          }} disabled={!loaded}>
-            {SOURCES.map((src) => (
-              <ToggleGroupItem key={src.id} value={String(src.id)} className="flex-1">{src.name}</ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-        </CardContent>
-      </Card>
+      <div className="border-b pb-3 mb-3">
+        <div className="text-xs font-medium text-muted-foreground mb-2">信号源切换</div>
+        <ToggleGroup type="single" value={String(activeSource)} onValueChange={(v) => {
+          if (v) {
+            const id = parseInt(v);
+            setActiveSource(id);
+            setSourceName(SOURCES.find((s) => s.id === id)?.name || "");
+            invoke("set_input_source", { sourceId: id });
+          }
+        }} disabled={!loaded}>
+          {SOURCES.map((src) => (
+            <ToggleGroupItem key={src.id} value={String(src.id)} className="flex-1">{src.name}</ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </div>
 
       {sourceName && (
-        <Card>
-          <CardContent className="pt-6">
-            <div className={cn("text-4xl font-light text-center tracking-wide", loaded ? "text-foreground/80" : "text-muted-foreground")}>{sourceName}</div>
-          </CardContent>
-        </Card>
+        <div className="pt-4">
+          <div className={cn("text-3xl font-light text-center tracking-wide", loaded ? "text-foreground/80" : "text-muted-foreground")}>{sourceName}</div>
+        </div>
       )}
     </div>
   );

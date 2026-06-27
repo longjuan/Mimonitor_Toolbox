@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { useState, useEffect, useCallback } from "react";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 
@@ -16,8 +15,8 @@ interface ToggleRowProps {
 
 function ToggleRow({ label, options, value, onChange, disabled }: ToggleRowProps) {
   return (
-    <div className="space-y-1.5">
-      <span className="text-sm text-muted-foreground">{label}</span>
+    <div className="space-y-1">
+      <span className="text-xs text-muted-foreground">{label}</span>
       <ToggleGroup type="single" value={value} onValueChange={(v) => v && onChange(v)} disabled={disabled}>
         {options.map((opt) => (
           <ToggleGroupItem key={opt.value} value={opt.value}>{opt.label}</ToggleGroupItem>
@@ -58,17 +57,17 @@ export default function Game() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">游戏模式</h1>
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-sm font-medium mb-4">游戏模式</h1>
         <Button variant="outline" size="sm" onClick={refresh} disabled={!loaded}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" />刷新
+          <RefreshCw className="h-3 w-3 mr-1" />刷新
         </Button>
       </div>
 
-      <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-sm font-medium">游戏功能</CardTitle></CardHeader>
-        <CardContent className={cn("space-y-4", !loaded && "opacity-50 pointer-events-none")}>
+      <div className={cn(!loaded && "opacity-50 pointer-events-none")}>
+        <div className="text-xs font-medium text-muted-foreground mb-2">游戏功能</div>
+        <div className="space-y-2">
           <ToggleRow label="准星" value={crosshair} onChange={handleChange(setCrosshair, "set_crosshair")} disabled={!loaded} options={[
             { value: "0", label: "关" }, { value: "1", label: "1" }, { value: "2", label: "2" }, { value: "3", label: "3" }, { value: "4", label: "4" }, { value: "5", label: "5" },
           ]} />
@@ -90,8 +89,8 @@ export default function Game() {
           <ToggleRow label="定时器" value={timer} onChange={handleChange(setTimer, "set_timer")} disabled={!loaded} options={[
             { value: "0", label: "关" }, { value: "60", label: "1分钟" }, { value: "300", label: "5分钟" }, { value: "1800", label: "30分钟" }, { value: "3600", label: "60分钟" },
           ]} />
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }

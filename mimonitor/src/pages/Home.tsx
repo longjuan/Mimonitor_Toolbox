@@ -3,7 +3,6 @@ import { useState, useEffect, useRef, RefObject } from "react";
 import { Wifi, WifiOff, Search, PlugZap, Unplug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface HomeProps {
   onConnectChange: (connected: boolean) => void;
@@ -83,7 +82,6 @@ export default function Home({ onConnectChange, logs, addLog, logRef }: HomeProp
           setIp(mitv.ip);
           addLog(`自动选择: ${mitv.model} (${mitv.ip})`);
         }
-        // If only one device found, connect directly
         if (result.devices.length === 1) {
           const d = result.devices[0];
           setIp(d.ip);
@@ -112,55 +110,47 @@ export default function Home({ onConnectChange, logs, addLog, logRef }: HomeProp
   };
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold tracking-tight">红米 G Pro 27U Toolbox</h1>
+    <div>
+      <h1 className="text-sm font-medium mb-4">红米 G Pro 27U Toolbox</h1>
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-medium">连接</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex gap-2">
-            <Input placeholder="显示器 IP 地址" value={ip} onChange={(e) => setIp(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleConnect()} className="w-60" />
-            {status === "connected" ? (
-              <Button variant="outline" onClick={handleDisconnect}><Unplug className="h-4 w-4 mr-1.5" />断开</Button>
-            ) : (
-              <Button onClick={handleConnect} disabled={status === "scanning"}>
-                <PlugZap className="h-4 w-4 mr-1.5" />{status === "scanning" ? "连接中..." : "连接"}
-              </Button>
-            )}
-            <Button variant="outline" onClick={handleScan} disabled={status === "scanning"}>
-              <Search className="h-4 w-4 mr-1.5" />扫描
+      <div className="border-b pb-3 mb-3">
+        <div className="text-xs font-medium text-muted-foreground mb-2">连接</div>
+        <div className="flex gap-2">
+          <Input placeholder="显示器 IP 地址" value={ip} onChange={(e) => setIp(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleConnect()} className="w-52 h-8 text-xs" />
+          {status === "connected" ? (
+            <Button variant="outline" onClick={handleDisconnect}><Unplug className="h-4 w-4 mr-1.5" />断开</Button>
+          ) : (
+            <Button onClick={handleConnect} disabled={status === "scanning"}>
+              <PlugZap className="h-4 w-4 mr-1.5" />{status === "scanning" ? "连接中..." : "连接"}
             </Button>
-          </div>
-          <div className="flex items-center gap-2 text-sm">
-            {status === "connected" ? (
-              <><Wifi className="h-3.5 w-3.5 text-green-500" /><span className="text-green-600 dark:text-green-400">已连接 {model}</span></>
-            ) : status === "scanning" ? (
-              <><Search className="h-3.5 w-3.5 text-amber-500 animate-pulse" /><span className="text-amber-600 dark:text-amber-400">扫描中...</span></>
-            ) : (
-              <><WifiOff className="h-3.5 w-3.5 text-muted-foreground" /><span className="text-muted-foreground">未连接</span></>
-            )}
-          </div>
-          {devices.length > 0 && (
-            <select className="w-60 h-9 rounded-md border bg-transparent px-3 text-sm" value={ip} onChange={(e) => setIp(e.target.value)}>
-              {devices.map((d) => (<option key={d.ip} value={d.ip}>{d.model} ({d.ip})</option>))}
-            </select>
           )}
-        </CardContent>
-      </Card>
+          <Button variant="outline" onClick={handleScan} disabled={status === "scanning"}>
+            <Search className="h-4 w-4 mr-1.5" />扫描
+          </Button>
+        </div>
+        <div className="flex items-center gap-2 text-xs mt-2">
+          {status === "connected" ? (
+            <><Wifi className="h-3 w-3 text-green-500" /><span className="text-green-600 dark:text-green-400">已连接 {model}</span></>
+          ) : status === "scanning" ? (
+            <><Search className="h-3 w-3 text-amber-500 animate-pulse" /><span className="text-amber-600 dark:text-amber-400">扫描中...</span></>
+          ) : (
+            <><WifiOff className="h-3 w-3 text-muted-foreground" /><span className="text-muted-foreground">未连接</span></>
+          )}
+        </div>
+        {devices.length > 0 && (
+          <select className="w-52 h-8 rounded-md border bg-transparent px-2.5 text-xs mt-2" value={ip} onChange={(e) => setIp(e.target.value)}>
+            {devices.map((d) => (<option key={d.ip} value={d.ip}>{d.model} ({d.ip})</option>))}
+          </select>
+        )}
+      </div>
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-medium">日志</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div ref={logRef as React.RefObject<HTMLDivElement>} className="h-52 overflow-y-auto rounded-md bg-muted/50 p-3 font-mono text-xs text-muted-foreground whitespace-pre-wrap">
-            {logs.length === 0 ? "等待操作..." : logs.join("\n")}
-          </div>
-        </CardContent>
-      </Card>
+      <div>
+        <div className="text-xs font-medium text-muted-foreground mb-2">日志</div>
+        <div ref={logRef as React.RefObject<HTMLDivElement>} className="h-44 overflow-y-auto rounded-md bg-muted/50 p-2.5 font-mono text-[11px] text-muted-foreground whitespace-pre-wrap select-text" style={{ userSelect: "text", WebkitUserSelect: "text" }}>
+          {logs.length === 0 ? "等待操作..." : logs.join("\n")}
+        </div>
+      </div>
     </div>
   );
 }

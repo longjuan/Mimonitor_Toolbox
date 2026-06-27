@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Slider } from "@/components/ui/slider";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
@@ -34,10 +33,10 @@ function SliderRow({ label, settingKey, min, max, step = 1, disabled, settings }
   };
 
   return (
-    <div className="flex items-center gap-3">
-      <span className="w-20 text-sm text-muted-foreground">{label}</span>
+    <div className="flex items-center gap-2">
+      <span className="w-16 text-xs text-muted-foreground">{label}</span>
       <Slider min={min} max={max} step={step} value={[value]} onValueChange={handleChange} className="flex-1" disabled={disabled} />
-      <span className="w-10 text-right text-sm tabular-nums">{value}</span>
+      <span className="w-8 text-right text-xs tabular-nums">{value}</span>
     </div>
   );
 }
@@ -52,8 +51,8 @@ interface ButtonGroupProps {
 
 function ButtonGroup({ label, options, value, onChange, disabled }: ButtonGroupProps) {
   return (
-    <div className="space-y-1.5">
-      <span className="text-sm text-muted-foreground">{label}</span>
+    <div className="space-y-1">
+      <span className="text-xs text-muted-foreground">{label}</span>
       <ToggleGroup type="single" value={value} onValueChange={(v) => v && onChange(v)} disabled={disabled}>
         {options.map((opt) => (
           <ToggleGroupItem key={opt.value} value={opt.value}>{opt.label}</ToggleGroupItem>
@@ -74,7 +73,6 @@ export default function Picture() {
   const [hdrToneMapping, setHdrToneMapping] = useState("0");
   const [settings, setSettings] = useState<Record<string, string>>({});
 
-  // HDR picture modes that support tone mapping
   const HDR_MODES = new Set([11,12,13,15,16,17,18,19,22,23,29,30,31,32,33,39,40,41,42,43,44]);
   const showHdrToneMapping = HDR_MODES.has(parseInt(pictureMode));
 
@@ -107,44 +105,42 @@ export default function Picture() {
   const disabled = loading;
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">画面设置</h1>
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-sm font-medium mb-4">画面设置</h1>
         <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" />刷新
+          <RefreshCw className="h-3 w-3 mr-1" />刷新
         </Button>
       </div>
 
-      <div className={cn("relative space-y-4", loading && "opacity-50 pointer-events-none")}>
-        <Card>
-          <CardHeader className="pb-3"><CardTitle className="text-sm font-medium">画面模式</CardTitle></CardHeader>
-          <CardContent>
-            <ToggleGroup type="single" value={pictureMode} onValueChange={(v) => {
-              if (v) { setPictureMode(v); invoke("set_picture_mode", { mode: parseInt(v) }).then(() => setTimeout(refresh, 200)); }
-            }} disabled={disabled}>
-              <ToggleGroupItem value="14">标准</ToggleGroupItem>
-              <ToggleGroupItem value="10">游戏</ToggleGroupItem>
-              <ToggleGroupItem value="9">电影</ToggleGroupItem>
-              <Button variant="outline" size="sm" className="ml-2" onClick={() => invoke("reset_picture_mode").then(refresh)} disabled={disabled}>恢复默认</Button>
-            </ToggleGroup>
-          </CardContent>
-        </Card>
+      <div className={cn(loading && "opacity-50 pointer-events-none")}>
+        <div className="border-b pb-3 mb-3">
+          <div className="text-xs font-medium text-muted-foreground mb-2">画面模式</div>
+          <ToggleGroup type="single" value={pictureMode} onValueChange={(v) => {
+            if (v) { setPictureMode(v); invoke("set_picture_mode", { mode: parseInt(v) }).then(() => setTimeout(refresh, 200)); }
+          }} disabled={disabled}>
+            <ToggleGroupItem value="14">标准</ToggleGroupItem>
+            <ToggleGroupItem value="10">游戏</ToggleGroupItem>
+            <ToggleGroupItem value="9">电影</ToggleGroupItem>
+            <Button variant="outline" size="sm" className="ml-2" onClick={() => invoke("reset_picture_mode").then(refresh)} disabled={disabled}>恢复默认</Button>
+          </ToggleGroup>
+        </div>
 
-        <Card>
-          <CardHeader className="pb-3"><CardTitle className="text-sm font-medium">画面参数</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
+        <div className="border-b pb-3 mb-3">
+          <div className="text-xs font-medium text-muted-foreground mb-2">画面参数</div>
+          <div className="space-y-2">
             <SliderRow label="背光" settingKey="picture_backlight" min={1} max={100} disabled={disabled} settings={settings} />
             <SliderRow label="黑色级别" settingKey="picture_brightness" min={0} max={100} disabled={disabled} settings={settings} />
             <SliderRow label="对比度" settingKey="picture_contrast" min={0} max={100} disabled={disabled} settings={settings} />
             <SliderRow label="饱和度" settingKey="picture_saturation" min={0} max={100} disabled={disabled} settings={settings} />
             <SliderRow label="色调" settingKey="picture_hue" min={0} max={100} disabled={disabled} settings={settings} />
             <SliderRow label="锐度" settingKey="picture_sharpness" min={0} max={100} disabled={disabled} settings={settings} />
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
-        <Card>
-          <CardHeader className="pb-3"><CardTitle className="text-sm font-medium">高级设置</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
+        <div className="border-b pb-3 mb-3">
+          <div className="text-xs font-medium text-muted-foreground mb-2">高级设置</div>
+          <div className="space-y-2">
             <ButtonGroup label="色温" value={colorTemp} onChange={handleChange(setColorTemp, "set_color_temperature")} disabled={disabled} options={[
               { value: "0", label: "冷色" }, { value: "1", label: "标准" }, { value: "2", label: "暖色" }, { value: "8", label: "原色" }, { value: "3", label: "自定义" },
             ]} />
@@ -165,18 +161,18 @@ export default function Picture() {
             <ButtonGroup label="色域" value={colorSpace} onChange={handleChange(setColorSpace, "set_color_space")} disabled={disabled} options={[
               { value: "0", label: "自动" }, { value: "3", label: "sRGB" }, { value: "6", label: "DCI-P3" }, { value: "4", label: "AdobeRGB" }, { value: "5", label: "BT2020" }, { value: "7", label: "BT709" },
             ]} />
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
         {showColorGains && (
-          <Card>
-            <CardHeader className="pb-3"><CardTitle className="text-sm font-medium">RGB 增益</CardTitle></CardHeader>
-            <CardContent className="space-y-4">
+          <div>
+            <div className="text-xs font-medium text-muted-foreground mb-2">RGB 增益</div>
+            <div className="space-y-2">
               <SliderRow label="红色" settingKey="picture_red_gain" min={524} max={1524} disabled={disabled} settings={settings} />
               <SliderRow label="绿色" settingKey="picture_green_gain" min={524} max={1524} disabled={disabled} settings={settings} />
               <SliderRow label="蓝色" settingKey="picture_blue_gain" min={524} max={1524} disabled={disabled} settings={settings} />
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         )}
       </div>
     </div>

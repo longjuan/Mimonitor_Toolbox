@@ -4,22 +4,19 @@ import {
   Volume2, VolumeX, Volume1,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function Remote() {
   const sendKey = (key: string) => invoke("send_remote_key", { key });
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold tracking-tight">虚拟遥控器</h1>
+    <div>
+      <h1 className="text-sm font-medium mb-4">虚拟遥控器</h1>
 
-      <Card className="max-w-xs mx-auto">
-        <CardHeader className="pb-2 text-center">
-          <CardTitle className="text-xs font-medium tracking-[0.2em] text-muted-foreground uppercase">
-            G Pro Control
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col items-center gap-5 pb-8">
+      <div className="max-w-xs mx-auto pt-2">
+        <div className="text-center mb-4">
+          <span className="text-[10px] font-medium tracking-[0.2em] text-muted-foreground uppercase">G Pro Control</span>
+        </div>
+        <div className="flex flex-col items-center gap-5 pb-6">
           <Button variant="destructive" size="icon" className="rounded-full h-12 w-12" onClick={() => sendKey("power")}>
             <Power className="h-5 w-5" />
           </Button>
@@ -65,8 +62,8 @@ export default function Remote() {
               <Volume2 className="h-4 w-4" />
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }

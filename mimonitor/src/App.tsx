@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Home, Monitor, Gamepad2, Radio, Lightbulb, Smartphone, Keyboard, Settings,
+  Home, Monitor, Gamepad2, Radio, Lightbulb, Smartphone, Keyboard, Wrench, Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
 import HomeP from "@/pages/Home";
 import Picture from "@/pages/Picture";
 import Game from "@/pages/Game";
@@ -13,6 +13,10 @@ import Light from "@/pages/Light";
 import Remote from "@/pages/Remote";
 import Hotkey from "@/pages/Hotkey";
 import Tools from "@/pages/Tools";
+import SettingsP from "@/pages/Settings";
+
+// Items that require ADB connection
+const NEEDS_CONNECTION = new Set(["picture", "game", "source", "light", "remote", "hotkey", "tools"]);
 
 const NAV_ITEMS = [
   { id: "home", label: "首页", icon: Home },
@@ -22,7 +26,8 @@ const NAV_ITEMS = [
   { id: "light", label: "灯光", icon: Lightbulb },
   { id: "remote", label: "遥控器", icon: Smartphone },
   { id: "hotkey", label: "热键", icon: Keyboard },
-  { id: "tools", label: "工具", icon: Settings },
+  { id: "tools", label: "工具", icon: Wrench },
+  { id: "settings", label: "设置", icon: Settings },
 ];
 
 export default function App() {
@@ -30,6 +35,13 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
+
+  // Apply theme on mount
+  useEffect(() => {
+    invoke<{ theme?: string }>("get_config").then((config) => {
+      applyTheme(config.theme || "auto");
+    });
+  }, []);
 
   const addLog = useCallback((msg: string) => {
     const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -52,6 +64,18 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  const applyTheme = (theme: string) => {
+    const root = document.documentElement;
+    root.classList.remove("dark");
+    if (theme === "dark") {
+      root.classList.add("dark");
+    } else if (theme === "auto") {
+      if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+        root.classList.add("dark");
+      }
+    }
+  };
+
   const renderPage = () => {
     switch (currentPage) {
       case "home": return <HomeP onConnectChange={setConnected} logs={logs} addLog={addLog} logRef={logRef} />;
@@ -62,36 +86,56 @@ export default function App() {
       case "remote": return <Remote />;
       case "hotkey": return <Hotkey />;
       case "tools": return <Tools />;
+      case "settings": return <SettingsP onThemeChange={applyTheme} />;
       default: return <HomeP onConnectChange={setConnected} logs={logs} addLog={addLog} logRef={logRef} />;
     }
   };
 
   return (
     <div className="flex h-screen bg-background text-foreground">
-      <nav className="w-56 shrink-0 border-r bg-card/50 backdrop-blur-sm flex flex-col">
-        <div className="flex items-center gap-2.5 px-5 py-4 border-b">
-          <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
-            <span className="text-xs font-bold text-primary-foreground">M</span>
-          </div>
-          <span className="font-semibold text-sm tracking-tight">Mimonitor</span>
-          <div className={cn("ml-auto w-2 h-2 rounded-full", connected ? "bg-green-500" : "bg-red-400")} />
-        </div>
-        <div className="flex-1 px-3 py-2 space-y-0.5">
+      {/* Sidebar */}
+      <nav className="w-60 shrink-0 border-r border-border/40 flex flex-col">
+        {/* Traffic lights spacer + drag region */}
+        <div className="h-8 shrink-0 cursor-default" onMouseDown={() => getCurrentWindow().startDragging()} />
+
+        {/* Navigation */}
+        <div className="flex-1 px-2 py-1.5 space-y-0.5">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
-            const disabled = !connected && item.id !== "home";
+            const active = currentPage === item.id;
+            const disabled = !connected && NEEDS_CONNECTION.has(item.id);
             return (
-              <Button key={item.id} variant={currentPage === item.id ? "secondary" : "ghost"}
-                className={cn("w-full justify-start gap-2.5 h-9 font-normal text-[13px]", currentPage === item.id && "bg-accent font-medium")}
-                onClick={() => { if (!disabled) setCurrentPage(item.id); }} disabled={disabled}>
-                <Icon className="h-4 w-4" />{item.label}
-              </Button>
+              <button
+                key={item.id}
+                className={cn(
+                  "w-full flex items-center gap-2.5 px-2.5 h-[30px] rounded-md text-[13px] transition-colors duration-150",
+                  active
+                    ? "bg-accent text-accent-foreground font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
+                  disabled && "opacity-40 cursor-not-allowed"
+                )}
+                onClick={() => { if (!disabled) setCurrentPage(item.id); }}
+                disabled={disabled}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                {item.label}
+              </button>
             );
           })}
         </div>
+
+        {/* Footer */}
+        <div className="px-4 py-2.5 border-t border-border/40">
+          <div className="text-[11px] text-muted-foreground/60">
+            {connected ? "已连接" : "未连接"}
+          </div>
+        </div>
       </nav>
+
+      {/* Main content */}
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-6 py-6">{renderPage()}</div>
+        <div className="h-8 shrink-0 cursor-default" onMouseDown={() => getCurrentWindow().startDragging()} />
+        <div className="max-w-2xl px-6 pb-5">{renderPage()}</div>
       </main>
     </div>
   );
