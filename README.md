@@ -2,6 +2,8 @@
 
 红米 G Pro 27U 显示器控制工具 — 通过无线 ADB 连接并调优您的 MiniLED 旗舰显示器。
 
+> 基于 [YiHooong/Mimonitor_Toolbox](https://github.com/YiHooong/Mimonitor_Toolbox) 重写的 Tauri 桌面版本。
+
 ## 功能
 
 | 类别 | 功能 |
