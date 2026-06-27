@@ -56,25 +56,6 @@ pub fn run_command(adb: &AdbClient, args: &[&str]) -> AdbResult<String> {
     adb.shell(&cmd)
 }
 
-/// Get a JNI config value via logcat
-pub fn jni_get(adb: &AdbClient, key: &str) -> AdbResult<String> {
-    ensure_jar(adb)?;
-
-    adb.shell("logcat -c")?;
-    run_command(adb, &["get", key])?;
-
-    std::thread::sleep(std::time::Duration::from_millis(800));
-
-    let log = adb.shell(&format!("logcat -d | grep 'GET {}' | tail -1", key))?;
-    let val = if let Some(pos) = log.find("= ") {
-        log[pos + 2..].trim().to_string()
-    } else {
-        "N/A".to_string()
-    };
-    log::debug!("jni_get {} => {}", key, val);
-    Ok(val)
-}
-
 /// Set a JNI config value
 pub fn jni_set(adb: &AdbClient, key: &str, value: i32, is_update: i32) -> AdbResult<String> {
     log::debug!("jni_set {} = {}", key, value);

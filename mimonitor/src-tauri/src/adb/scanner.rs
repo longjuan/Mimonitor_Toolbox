@@ -139,15 +139,6 @@ fn subnet_priority(subnet: &str) -> u8 {
     }
 }
 
-/// Get a single best subnet (for backward compatibility)
-pub fn get_local_subnet() -> AdbResult<String> {
-    let subnets = get_local_subnets();
-    subnets
-        .into_iter()
-        .next()
-        .ok_or_else(|| super::AdbError::ConnectionFailed("No network interface found".into()))
-}
-
 /// Scan one /24 subnet for ADB devices
 async fn scan_subnet(subnet: &str) -> Vec<DiscoveredDevice> {
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(128));
@@ -295,18 +286,6 @@ mod tests {
             for part in &parts {
                 part.parse::<u8>().expect("Each octet should be a number");
             }
-        }
-    }
-
-    #[test]
-    fn test_get_local_subnet_returns_first() {
-        let subnet = get_local_subnet();
-        match subnet {
-            Ok(s) => {
-                let parts: Vec<&str> = s.split('.').collect();
-                assert_eq!(parts.len(), 3);
-            }
-            Err(_) => {} // OK in sandboxed env
         }
     }
 

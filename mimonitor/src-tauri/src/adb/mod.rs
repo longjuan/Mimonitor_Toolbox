@@ -1,7 +1,5 @@
-pub mod device;
 pub mod jni;
 pub mod scanner;
-pub mod settings;
 pub mod guardian;
 
 use thiserror::Error;
@@ -14,8 +12,6 @@ pub enum AdbError {
     ShellFailed(String),
     #[error("JNI call failed: {0}")]
     JniFailed(String),
-    #[error("Device not connected")]
-    NotConnected,
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -134,30 +130,11 @@ impl AdbClient {
         self.shell("am broadcast -a com.xiaomi.mitv.action.PIC_MODE_CHANGED --ei picmode 7")?;
         Ok(())
     }
-
-    /// Get current IP
-    pub fn ip(&self) -> &str {
-        &self.ip
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_new_client_stores_ip() {
-        let client = AdbClient::new("192.168.5.252");
-        assert_eq!(client.ip(), "192.168.5.252");
-    }
-
-    #[test]
-    fn test_connect_stores_ip() {
-        let mut client = AdbClient::new("0.0.0.0");
-        // connect will fail (no adb server) but ip should be stored
-        let _ = client.connect("192.168.5.252");
-        assert_eq!(client.ip(), "192.168.5.252");
-    }
 
     #[test]
     fn test_shell_with_invalid_ip_returns_error() {
@@ -173,8 +150,6 @@ mod tests {
     #[test]
     fn test_get_setting_format() {
         let client = AdbClient::new("127.0.0.1");
-        // get_setting constructs "settings get global <key>"
-        // May succeed (adb installed) or fail (no adb)
         let _ = client.get_setting("picture_mode");
     }
 
@@ -194,7 +169,6 @@ mod tests {
     fn test_push_file_format() {
         let client = AdbClient::new("127.0.0.1");
         let result = client.push("/tmp/nonexistent.jar", "/sdcard/test.jar");
-        // Should fail either because no adb or file doesn't exist
         assert!(result.is_err());
     }
 
@@ -208,15 +182,5 @@ mod tests {
     fn test_refresh_pq_format() {
         let client = AdbClient::new("127.0.0.1");
         let _ = client.refresh_pq();
-    }
-
-    #[test]
-    fn test_connect_with_various_ips() {
-        let mut client = AdbClient::new("0.0.0.0");
-        // All should store IP even if connection fails
-        for ip in &["192.168.1.1", "10.0.0.1", "172.16.0.1"] {
-            let _ = client.connect(ip);
-            assert_eq!(client.ip(), *ip);
-        }
     }
 }

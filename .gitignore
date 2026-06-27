@@ -31,3 +31,6 @@ ok.py
 # Android SDK cache (build dependency)
 tools/monitor-tool/.sdk/
 tools/monitor-tool/android.jar
+
+# Compiled artifact (built by `make jar`)
+mimonitor/resources/MonitorTool.jar

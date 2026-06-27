@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import { ExternalLink } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 export default function Settings({ onThemeChange }: { onThemeChange?: (theme: string) => void }) {
   const [config, setConfig] = useState<any>({});
@@ -48,11 +49,11 @@ export default function Settings({ onThemeChange }: { onThemeChange?: (theme: st
       </div>
 
       <div>
-        <a href="https://github.com/YiHooong/Mimonitor_Toolbox" target="_blank" rel="noopener noreferrer"
+        <button onClick={() => openUrl("https://github.com/longjuan/Mimonitor_Toolbox")}
           className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground transition-colors">
           <ExternalLink className="h-3 w-3" />
           GitHub 仓库
-        </a>
+        </button>
       </div>
     </div>
   );

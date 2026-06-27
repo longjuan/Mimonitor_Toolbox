@@ -22,7 +22,6 @@ impl AppState {
             last_state: None,
             sdr_memory: config.local_dimming_memory.sdr,
             hdr_memory: config.local_dimming_memory.hdr,
-            suppress_until: None,
         };
         Self {
             config: Arc::new(RwLock::new(config)),

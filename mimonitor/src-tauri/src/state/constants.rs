@@ -1,13 +1,3 @@
-// Picture mode IDs
-pub const MODE_STANDARD: i32 = 14;
-pub const MODE_GAME: i32 = 10;
-pub const MODE_MOVIE: i32 = 9;
-
-// Picture mode groups (all scene IDs that map to each mode)
-pub const STANDARD_SCENES: &[i32] = &[14, 64, 65, 66, 67, 68];
-pub const GAME_SCENES: &[i32] = &[10, 25, 26, 27, 28, 29];
-pub const MOVIE_SCENES: &[i32] = &[9];
-
 // Xiaomi to MTK color temperature mapping
 pub const XIAOMI_TO_MTK_COLOR_TEMP: &[(i32, i32)] = &[
     (0, 1), // Cold
@@ -19,29 +9,16 @@ pub const XIAOMI_TO_MTK_COLOR_TEMP: &[(i32, i32)] = &[
     (8, 6), // Native
 ];
 
-pub const MTK_TO_XIAOMI_COLOR_TEMP: &[(i32, i32)] = &[
-    (1, 0), (2, 1), (3, 2), (0, 3), (4, 4), (5, 5), (6, 8),
-];
-
-pub const CUSTOM_COLOR_TEMP_VALUE: i32 = 3;
-
 // Input source IDs
-pub const SOURCE_HDMI1: i32 = 23;
-pub const SOURCE_HDMI2: i32 = 24;
 pub const SOURCE_DP: i32 = 29;
 pub const SOURCE_USBC: i32 = 30;
 
 // JNI keys
-pub const JNI_BACKLIGHT: &str = "g_disp__disp_back_light";
 pub const JNI_CLR_TEMP: &str = "g_video__clr_temp";
-pub const JNI_CLR_GAIN_R: &str = "g_video__clr_gain_r";
-pub const JNI_CLR_GAIN_G: &str = "g_video__clr_gain_g";
-pub const JNI_CLR_GAIN_B: &str = "g_video__clr_gain_b";
 pub const JNI_LOCAL_DIMMING: &str = "g_video__vid_local_dimming";
 pub const JNI_GAMUT: &str = "g_video__vid_gamut_mapping_mode";
 pub const JNI_RESPONSE_TIME: &str = "g_video__vid_od_response_time";
 pub const JNI_INSERT_BLACK: &str = "g_video__vid_insert_black";
-pub const JNI_HDR_TONE_MAPPING: &str = "g_video__vid_hdr_tone_mapping_mode";
 pub const JNI_FREESYNC_DP: &str = "g_video__dp_adaptive_sync";
 pub const JNI_FREESYNC_HDMI: &str = "g_video__freesync_switch";
 pub const JNI_EDID_DP: &str = "g_fusion_picture__dp_edid_version";
