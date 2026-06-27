@@ -2,6 +2,11 @@ pub mod jni;
 pub mod scanner;
 pub mod guardian;
 
+use std::net::SocketAddr;
+use std::sync::Mutex;
+
+use adb_client::tcp::ADBTcpDevice;
+use adb_client::ADBDeviceExt;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -16,62 +21,59 @@ pub enum AdbError {
     Io(#[from] std::io::Error),
 }
 
-pub type AdbResult<T> = Result<T, AdbError>;
-
-/// Create a Command with CREATE_NO_WINDOW on Windows to avoid terminal popup
-pub(crate) fn silent_command(program: &str) -> std::process::Command {
-    #[allow(unused_mut)]
-    let mut cmd = std::process::Command::new(program);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+impl From<adb_client::RustADBError> for AdbError {
+    fn from(e: adb_client::RustADBError) -> Self {
+        AdbError::ShellFailed(e.to_string())
     }
-    cmd
 }
 
-/// ADB client wrapper — shells out to `adb` binary for now
+pub type AdbResult<T> = Result<T, AdbError>;
+
+/// ADB client wrapper — uses adb_client crate (pure Rust, no external adb binary)
 pub struct AdbClient {
+    device: Mutex<Option<ADBTcpDevice>>,
     ip: String,
 }
 
 impl AdbClient {
     pub fn new(ip: &str) -> Self {
         Self {
+            device: Mutex::new(None),
             ip: ip.to_string(),
         }
     }
 
-    /// Connect to device via TCP
+    /// Connect to device via TCP (pure Rust, no adb binary needed)
     pub fn connect(&mut self, ip: &str) -> AdbResult<bool> {
         self.ip = ip.to_string();
-        let output = silent_command("adb")
-            .args(["connect", &format!("{}:5555", ip)])
-            .output()
-            .map_err(|e| AdbError::ConnectionFailed(e.to_string()))?;
+        let addr: SocketAddr = format!("{}:5555", ip).parse()
+            .map_err(|e: std::net::AddrParseError| AdbError::ConnectionFailed(e.to_string()))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        log::info!("adb connect {} => {}", ip, stdout.trim());
-
-        // "connected to x.x.x.x:5555" or "already connected to x.x.x.x:5555"
-        Ok(stdout.contains("connected to") && !stdout.contains("failed"))
+        match ADBTcpDevice::new(addr) {
+            Ok(device) => {
+                log::info!("adb connected to {}", ip);
+                self.device = Mutex::new(Some(device));
+                Ok(true)
+            }
+            Err(e) => {
+                log::warn!("adb connect {} failed: {}", ip, e);
+                Err(AdbError::ConnectionFailed(e.to_string()))
+            }
+        }
     }
 
     /// Run a shell command on the device
     pub fn shell(&self, cmd: &str) -> AdbResult<String> {
-        let output = silent_command("adb")
-            .args(["-s", &format!("{}:5555", self.ip), "shell", cmd])
-            .output()
+        let mut device = self.device.lock()
             .map_err(|e| AdbError::ShellFailed(e.to_string()))?;
+        let device = device.as_mut()
+            .ok_or_else(|| AdbError::ConnectionFailed("Not connected".into()))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let mut stdout_buf = Vec::new();
+        device.shell_command(&cmd.to_string(), Some(&mut stdout_buf), None)?;
 
-        if !output.status.success() && !stderr.is_empty() {
-            log::warn!("adb shell stderr: {}", stderr.trim());
-        }
-
-        Ok(stdout)
+        let output = String::from_utf8_lossy(&stdout_buf).to_string();
+        Ok(output)
     }
 
     /// Get an Android global setting
@@ -120,14 +122,15 @@ impl AdbClient {
 
     /// Push a file to the device
     pub fn push(&self, local: &str, remote: &str) -> AdbResult<()> {
-        let status = silent_command("adb")
-            .args(["-s", &format!("{}:5555", self.ip), "push", local, remote])
-            .status()
+        let mut device = self.device.lock()
             .map_err(|e| AdbError::ShellFailed(e.to_string()))?;
+        let device = device.as_mut()
+            .ok_or_else(|| AdbError::ConnectionFailed("Not connected".into()))?;
 
-        if !status.success() {
-            return Err(AdbError::ShellFailed(format!("push failed: {} -> {}", local, remote)));
-        }
+        let mut file = std::fs::File::open(local)
+            .map_err(|e| AdbError::ShellFailed(format!("Cannot open {}: {}", local, e)))?;
+        device.push(&mut file, &remote.to_string())?;
+        log::info!("push {} -> {}", local, remote);
         Ok(())
     }
 
@@ -149,50 +152,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_shell_with_invalid_ip_returns_error() {
+    fn test_new_client_has_no_device() {
+        let client = AdbClient::new("192.168.5.252");
+        assert!(client.device.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_shell_without_connection_returns_error() {
         let client = AdbClient::new("192.168.5.252");
         let result = client.shell("echo hello");
-        match result {
-            Ok(output) => assert!(output.contains("hello") || output.is_empty()),
-            Err(AdbError::ShellFailed(_)) => {} // adb not installed
-            Err(e) => panic!("Unexpected error: {}", e),
-        }
-    }
-
-    #[test]
-    fn test_get_setting_format() {
-        let client = AdbClient::new("127.0.0.1");
-        let _ = client.get_setting("picture_mode");
-    }
-
-    #[test]
-    fn test_put_setting_format() {
-        let client = AdbClient::new("127.0.0.1");
-        let _ = client.put_setting("picture_mode", "14");
-    }
-
-    #[test]
-    fn test_send_key_format() {
-        let client = AdbClient::new("127.0.0.1");
-        let _ = client.send_key("KEYCODE_POWER");
-    }
-
-    #[test]
-    fn test_push_file_format() {
-        let client = AdbClient::new("127.0.0.1");
-        let result = client.push("/tmp/nonexistent.jar", "/sdcard/test.jar");
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_get_model_format() {
-        let client = AdbClient::new("127.0.0.1");
-        let _ = client.get_model();
-    }
-
-    #[test]
-    fn test_refresh_pq_format() {
-        let client = AdbClient::new("127.0.0.1");
-        let _ = client.refresh_pq();
+    fn test_connect_to_invalid_ip_fails() {
+        let mut client = AdbClient::new("0.0.0.0");
+        // Connect to loopback port that's not an ADB server - should fail fast
+        let result = client.connect("127.0.0.1");
+        assert!(result.is_err());
     }
 }

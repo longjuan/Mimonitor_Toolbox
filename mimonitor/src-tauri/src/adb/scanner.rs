@@ -2,6 +2,9 @@ use super::AdbResult;
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
+use adb_client::tcp::ADBTcpDevice;
+use adb_client::ADBDeviceExt;
+
 /// Discovered device
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DiscoveredDevice {
@@ -16,7 +19,13 @@ pub fn get_local_subnets() -> Vec<String> {
 
     // Try ifconfig (macOS/Linux) or ipconfig (Windows)
     let output = if cfg!(target_os = "windows") {
-        super::silent_command("ipconfig").output()
+        let mut cmd = std::process::Command::new("ipconfig");
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        cmd.output()
     } else {
         std::process::Command::new("ifconfig").output()
     };
@@ -139,7 +148,7 @@ fn subnet_priority(subnet: &str) -> u8 {
     }
 }
 
-/// Scan one /24 subnet for ADB devices
+/// Scan one /24 subnet for ADB devices using pure Rust ADB protocol
 async fn scan_subnet(subnet: &str) -> Vec<DiscoveredDevice> {
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(128));
     let found = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
@@ -165,38 +174,22 @@ async fn scan_subnet(subnet: &str) -> Vec<DiscoveredDevice> {
                 return;
             }
 
-            // Try adb connect
-            let ip_clone = ip.clone();
-            let connect_ok = tokio::task::spawn_blocking(move || {
-                super::silent_command("adb")
-                    .args(["connect", &format!("{}:5555", ip_clone)])
-                    .output()
-                    .map(|o| {
-                        let out = String::from_utf8_lossy(&o.stdout);
-                        out.contains("connected to") && !out.contains("failed")
-                    })
-                    .unwrap_or(false)
+            // Try connecting via pure Rust ADB protocol
+            let result = tokio::task::spawn_blocking(move || -> Option<String> {
+                let mut device = ADBTcpDevice::new(addr).ok()?;
+                let mut buf = Vec::new();
+                device.shell_command(
+                    &"getprop ro.product.model".to_string(),
+                    Some(&mut buf),
+                    None,
+                ).ok()?;
+                let model = String::from_utf8_lossy(&buf).trim().to_string();
+                if model.is_empty() { None } else { Some(model) }
             })
             .await
-            .unwrap_or(false);
+            .unwrap_or(None);
 
-            if !connect_ok {
-                return;
-            }
-
-            // Get model
-            let ip_clone = ip.clone();
-            let model = tokio::task::spawn_blocking(move || {
-                super::silent_command("adb")
-                    .args(["-s", &format!("{}:5555", ip_clone), "shell", "getprop ro.product.model"])
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .unwrap_or_default()
-            })
-            .await
-            .unwrap_or_default();
-
-            if !model.is_empty() {
+            if let Some(model) = result {
                 found.lock().await.push(DiscoveredDevice { ip, model });
             }
         }));
@@ -211,53 +204,12 @@ async fn scan_subnet(subnet: &str) -> Vec<DiscoveredDevice> {
 }
 
 /// Scan local network for ADB devices.
-/// 1. Check already-connected devices via `adb devices`
-/// 2. If nothing found, scan all detected subnets
+/// Scans all detected subnets for devices with port 5555 open.
 /// Returns (devices, scanned_subnets) for logging purposes.
 pub async fn scan_network(_subnet_hint: &str) -> AdbResult<(Vec<DiscoveredDevice>, Vec<String>)> {
-    // Step 1: Check already-connected devices
     let mut found = Vec::new();
-    let existing = tokio::task::spawn_blocking(|| {
-        super::silent_command("adb")
-            .arg("devices")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default()
-    })
-    .await
-    .unwrap_or_default();
 
-    for line in existing.lines().skip(1) {
-        if let Some((addr, state)) = line.split_once('\t') {
-            if state.trim() == "device" {
-                if let Some(ip) = addr.strip_suffix(":5555") {
-                    let model = tokio::task::spawn_blocking({
-                        let ip = ip.to_string();
-                        move || {
-                            super::silent_command("adb")
-                                .args(["-s", &format!("{}:5555", ip), "shell", "getprop ro.product.model"])
-                                .output()
-                                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                                .unwrap_or_default()
-                        }
-                    })
-                    .await
-                    .unwrap_or_default();
-
-                    if !model.is_empty() {
-                        log::info!("Found connected device: {} ({})", ip, model);
-                        found.push(DiscoveredDevice { ip: ip.to_string(), model });
-                    }
-                }
-            }
-        }
-    }
-
-    if !found.is_empty() {
-        return Ok((found, vec!["已连接设备".to_string()]));
-    }
-
-    // Step 2: Scan all detected subnets
+    // Scan all detected subnets
     let subnets = get_local_subnets();
     log::info!("Scanning subnets: {:?}", subnets);
 
