@@ -57,9 +57,9 @@ pub fn check_status(adb: &AdbClient) -> AdbResult<GuardianStatus> {
         .trim()
         == "running";
 
-    let accessibility_out = adb.shell(&format!(
+    let accessibility_out = adb.shell(
         "settings get secure enabled_accessibility_services"
-    ))?;
+    )?;
     let accessibility_enabled = accessibility_out.contains(GUARDIAN_PACKAGE);
 
     let ok = installed

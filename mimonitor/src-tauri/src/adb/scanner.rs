@@ -38,7 +38,7 @@ pub fn get_local_subnets() -> Vec<String> {
             for line in text.lines() {
                 let line = line.trim();
                 if line.contains("IPv4") || line.contains("IP Address") {
-                    if let Some(ip_str) = line.split(':').last() {
+                    if let Some(ip_str) = line.split(':').next_back() {
                         if let Some(subnet) = parse_ip_to_subnet(ip_str.trim()) {
                             subnets.push(subnet);
                         }
