@@ -42,6 +42,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mimonitor/src-tauri
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -107,6 +111,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mimonitor/src-tauri
+          key: ${{ matrix.target }}
+
       - name: Install frontend dependencies
         working-directory: mimonitor
         run: npm ci
@@ -155,6 +164,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mimonitor/src-tauri
+          key: universal
 
       - name: Install frontend dependencies
         working-directory: mimonitor
