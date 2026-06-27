@@ -27,11 +27,12 @@ all: jar
 # ── Android SDK platform (android.jar) + build-tools (d8) ───
 
 $(CMDLINE_TOOLS):
-	@echo "==> Downloading Android cmdline-tools..."
+	@echo "==> Downloading Android cmdline-tools from $(CMDLINE_URL)..."
 	@mkdir -p $(SDK_DIR)
-	$(CURL) -fsSL -o /tmp/cmdline-tools.zip "$(CMDLINE_URL)" || (echo "ERROR: Failed to download cmdline-tools" && exit 1)
+	$(CURL) -o /tmp/cmdline-tools.zip "$(CMDLINE_URL)"
+	@echo "==> Download complete, extracting..."
 	@rm -rf $(SDK_DIR)/cmdline-tools-tmp
-	unzip -qo /tmp/cmdline-tools.zip -d $(SDK_DIR)/cmdline-tools-tmp || (echo "ERROR: Failed to unzip cmdline-tools" && exit 1)
+	unzip -qo /tmp/cmdline-tools.zip -d $(SDK_DIR)/cmdline-tools-tmp
 	@rm -rf $(SDK_DIR)/cmdline-tools
 	@mkdir -p $(SDK_DIR)/cmdline-tools
 	@mv $(SDK_DIR)/cmdline-tools-tmp/cmdline-tools $(SDK_DIR)/cmdline-tools/latest
@@ -41,14 +42,14 @@ $(CMDLINE_TOOLS):
 
 $(ANDROID_JAR): $(CMDLINE_TOOLS)
 	@echo "==> Installing Android platform $(ANDROID_API)..."
-	yes | $(CMDLINE_TOOLS) --sdk_root=$(SDK_DIR) "platforms;android-$(ANDROID_API)" 2>&1 || \
-		yes | $(CMDLINE_TOOLS) --sdk_root=$(SDK_DIR) --channel=0 "platforms;android-$(ANDROID_API)" 2>&1
-	@cp $(SDK_DIR)/platforms/android-$(ANDROID_API)/android.jar $@ || (echo "ERROR: Failed to copy android.jar" && exit 1)
+	yes | $(CMDLINE_TOOLS) --sdk_root=$(SDK_DIR) "platforms;android-$(ANDROID_API)" || \
+		yes | $(CMDLINE_TOOLS) --sdk_root=$(SDK_DIR) --channel=0 "platforms;android-$(ANDROID_API)"
+	@cp $(SDK_DIR)/platforms/android-$(ANDROID_API)/android.jar $@
 	@echo "==> android.jar ready"
 
 $(D8): $(CMDLINE_TOOLS)
 	@echo "==> Installing build-tools..."
-	yes | $(CMDLINE_TOOLS) --sdk_root=$(SDK_DIR) "build-tools;34.0.0" 2>&1 || (echo "ERROR: Failed to install build-tools" && exit 1)
+	yes | $(CMDLINE_TOOLS) --sdk_root=$(SDK_DIR) "build-tools;34.0.0"
 	@echo "==> build-tools installed"
 
 # ── Compile MonitorTool.java → MonitorTool.jar (DEX format) ──

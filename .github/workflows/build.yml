@@ -25,18 +25,6 @@ jobs:
           distribution: temurin
           java-version: '11'
 
-      - name: Cache Android SDK
-        uses: actions/cache@v4
-        with:
-          path: tools/monitor-tool/.sdk
-          key: android-sdk-34
-
-      - name: Cache android.jar
-        uses: actions/cache@v4
-        with:
-          path: tools/monitor-tool/android.jar
-          key: android-jar-34
-
       - name: Build MonitorTool.jar
         run: make jar
 
