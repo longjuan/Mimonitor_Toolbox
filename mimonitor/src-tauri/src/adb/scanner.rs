@@ -16,7 +16,7 @@ pub fn get_local_subnets() -> Vec<String> {
 
     // Try ifconfig (macOS/Linux) or ipconfig (Windows)
     let output = if cfg!(target_os = "windows") {
-        std::process::Command::new("ipconfig").output()
+        super::silent_command("ipconfig").output()
     } else {
         std::process::Command::new("ifconfig").output()
     };
@@ -168,7 +168,7 @@ async fn scan_subnet(subnet: &str) -> Vec<DiscoveredDevice> {
             // Try adb connect
             let ip_clone = ip.clone();
             let connect_ok = tokio::task::spawn_blocking(move || {
-                std::process::Command::new("adb")
+                super::silent_command("adb")
                     .args(["connect", &format!("{}:5555", ip_clone)])
                     .output()
                     .map(|o| {
@@ -187,7 +187,7 @@ async fn scan_subnet(subnet: &str) -> Vec<DiscoveredDevice> {
             // Get model
             let ip_clone = ip.clone();
             let model = tokio::task::spawn_blocking(move || {
-                std::process::Command::new("adb")
+                super::silent_command("adb")
                     .args(["-s", &format!("{}:5555", ip_clone), "shell", "getprop ro.product.model"])
                     .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -218,7 +218,7 @@ pub async fn scan_network(_subnet_hint: &str) -> AdbResult<(Vec<DiscoveredDevice
     // Step 1: Check already-connected devices
     let mut found = Vec::new();
     let existing = tokio::task::spawn_blocking(|| {
-        std::process::Command::new("adb")
+        super::silent_command("adb")
             .arg("devices")
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
@@ -234,7 +234,7 @@ pub async fn scan_network(_subnet_hint: &str) -> AdbResult<(Vec<DiscoveredDevice
                     let model = tokio::task::spawn_blocking({
                         let ip = ip.to_string();
                         move || {
-                            std::process::Command::new("adb")
+                            super::silent_command("adb")
                                 .args(["-s", &format!("{}:5555", ip), "shell", "getprop ro.product.model"])
                                 .output()
                                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())

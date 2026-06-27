@@ -18,6 +18,18 @@ pub enum AdbError {
 
 pub type AdbResult<T> = Result<T, AdbError>;
 
+/// Create a Command with CREATE_NO_WINDOW on Windows to avoid terminal popup
+pub(crate) fn silent_command(program: &str) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 /// ADB client wrapper — shells out to `adb` binary for now
 pub struct AdbClient {
     ip: String,
@@ -33,7 +45,7 @@ impl AdbClient {
     /// Connect to device via TCP
     pub fn connect(&mut self, ip: &str) -> AdbResult<bool> {
         self.ip = ip.to_string();
-        let output = std::process::Command::new("adb")
+        let output = silent_command("adb")
             .args(["connect", &format!("{}:5555", ip)])
             .output()
             .map_err(|e| AdbError::ConnectionFailed(e.to_string()))?;
@@ -47,7 +59,7 @@ impl AdbClient {
 
     /// Run a shell command on the device
     pub fn shell(&self, cmd: &str) -> AdbResult<String> {
-        let output = std::process::Command::new("adb")
+        let output = silent_command("adb")
             .args(["-s", &format!("{}:5555", self.ip), "shell", cmd])
             .output()
             .map_err(|e| AdbError::ShellFailed(e.to_string()))?;
@@ -108,7 +120,7 @@ impl AdbClient {
 
     /// Push a file to the device
     pub fn push(&self, local: &str, remote: &str) -> AdbResult<()> {
-        let status = std::process::Command::new("adb")
+        let status = silent_command("adb")
             .args(["-s", &format!("{}:5555", self.ip), "push", local, remote])
             .status()
             .map_err(|e| AdbError::ShellFailed(e.to_string()))?;
