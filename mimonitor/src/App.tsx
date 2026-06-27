@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Home, Monitor, Gamepad2, Radio, Lightbulb, Smartphone, Keyboard, Wrench, Settings,
+  Minus, Square, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import HomeP from "@/pages/Home";
@@ -29,6 +30,8 @@ const NAV_ITEMS = [
   { id: "tools", label: "工具", icon: Wrench },
   { id: "settings", label: "设置", icon: Settings },
 ];
+
+const isWindows = navigator.platform.toLowerCase().includes("win");
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState("home");
@@ -95,8 +98,26 @@ export default function App() {
     <div className="flex h-screen bg-background text-foreground">
       {/* Sidebar */}
       <nav className="w-60 shrink-0 border-r border-border/40 flex flex-col">
-        {/* Traffic lights spacer + drag region */}
-        <div className="h-8 shrink-0 cursor-default" onMouseDown={() => getCurrentWindow().startDragging()} />
+        {/* Title bar area: traffic lights (macOS) or window controls (Windows) */}
+        <div className="h-8 shrink-0 flex items-center justify-end px-2"
+          onMouseDown={(e) => { if (!(e.target as HTMLElement).closest("button")) getCurrentWindow().startDragging(); }}>
+          {isWindows && (
+            <div className="flex items-center -mr-1">
+              <button className="w-11 h-8 flex items-center justify-center text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+                onClick={() => getCurrentWindow().minimize()}>
+                <Minus className="h-4 w-4" />
+              </button>
+              <button className="w-11 h-8 flex items-center justify-center text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+                onClick={() => getCurrentWindow().toggleMaximize()}>
+                <Square className="h-3.5 w-3.5" />
+              </button>
+              <button className="w-11 h-8 flex items-center justify-center text-muted-foreground hover:bg-destructive hover:text-destructive-foreground transition-colors"
+                onClick={() => getCurrentWindow().close()}>
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Navigation */}
         <div className="flex-1 px-2 py-1.5 space-y-0.5">
